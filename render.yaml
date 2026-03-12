@@ -2,7 +2,7 @@ services:
   - type: web
     name: ahju-backend
     env: python
-    rootDir: backend
+    rootDir: .
     buildCommand: pip install -r requirements.txt
     startCommand: >-
       sh -c "python manage.py migrate &&
