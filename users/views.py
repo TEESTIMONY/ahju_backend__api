@@ -1,5 +1,6 @@
 import os
 import json
+import tempfile
 from pathlib import Path
 from datetime import timedelta
 from uuid import uuid4
@@ -8,7 +9,7 @@ from io import StringIO
 from django.contrib.auth import get_user_model
 from django.core.files.storage import default_storage
 from django.core.management import call_command
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.db.models import F, Max, Sum
 from django.db.models.functions import Coalesce
 from django.utils.crypto import get_random_string
@@ -421,6 +422,44 @@ class AdminDatabaseExportView(APIView):
         response = HttpResponse(output.getvalue(), content_type="application/json")
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
         return response
+
+
+class AdminDatabaseImportView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def post(self, request):
+        if not request.user.is_superuser:
+            return Response(
+                {"detail": "Superuser access required for full database import."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        backup_file = request.FILES.get("file")
+        if not backup_file:
+            return Response(
+                {"detail": "No backup file uploaded. Use multipart field name: file"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
+                for chunk in backup_file.chunks():
+                    tmp.write(chunk)
+                temp_path = tmp.name
+
+            with transaction.atomic():
+                call_command("loaddata", temp_path)
+
+            return Response({"detail": "Database import completed successfully."}, status=status.HTTP_200_OK)
+        except Exception as exc:
+            return Response(
+                {"detail": f"Database import failed: {exc}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                os.remove(temp_path)
 
 
 class UserAppearanceView(APIView):
