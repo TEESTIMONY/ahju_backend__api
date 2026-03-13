@@ -3,17 +3,20 @@ import json
 from pathlib import Path
 from datetime import timedelta
 from uuid import uuid4
+from io import StringIO
 
 from django.contrib.auth import get_user_model
 from django.core.files.storage import default_storage
+from django.core.management import call_command
 from django.db import IntegrityError
 from django.db.models import F, Max, Sum
 from django.db.models.functions import Coalesce
 from django.utils.crypto import get_random_string
 from django.utils.text import slugify
 from django.utils import timezone
+from django.http import HttpResponse
 from rest_framework import status
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated, IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -352,6 +355,72 @@ class UserContactLeadsView(APIView):
     def get(self, request):
         leads = UserContactLead.objects.filter(user=request.user)
         return Response(UserContactLeadSerializer(leads, many=True).data)
+
+
+class UserDataExportView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+
+        appearance, _ = UserAppearance.objects.get_or_create(user=user)
+        links = UserLink.objects.filter(user=user).order_by("sort_order", "id")
+        contacts = UserContactLead.objects.filter(user=user)
+        analytics_rows = UserAnalyticsDaily.objects.filter(user=user).order_by("date")
+
+        payload = {
+            "meta": {
+                "exported_at": timezone.now().isoformat(),
+                "format_version": "1.0",
+                "service": "ahju-backend",
+            },
+            "user": UserSerializer(user).data,
+            "appearance": UserAppearanceSerializer(appearance).data,
+            "links": UserLinkSerializer(links, many=True).data,
+            "contacts": UserContactLeadSerializer(contacts, many=True).data,
+            "analytics_daily": [
+                {
+                    "date": row.date.isoformat(),
+                    "views": row.views,
+                    "clicks": row.clicks,
+                    "card_taps": row.card_taps,
+                }
+                for row in analytics_rows
+            ],
+        }
+
+        filename = f"ahju-export-{user.username}-{timezone.now().date().isoformat()}.json"
+        return Response(
+            payload,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+        )
+
+
+class AdminDatabaseExportView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        if not request.user.is_superuser:
+            return Response(
+                {"detail": "Superuser access required for full database export."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        output = StringIO()
+        try:
+            call_command("dumpdata", indent=2, stdout=output)
+        except Exception as exc:
+            return Response(
+                {"detail": f"Database export failed: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        filename = f"ahju-full-backup-{timezone.now().date().isoformat()}.json"
+        response = HttpResponse(output.getvalue(), content_type="application/json")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
 
 
 class UserAppearanceView(APIView):
