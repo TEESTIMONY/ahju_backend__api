@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import UserAnalyticsDaily, UserAppearance, UserContactLead, UserLink
+from .models import UserAnalyticsDaily, UserAppearance, UserContactLead, UserLink, UserPortfolioItem
 
 
 @admin.register(UserAnalyticsDaily)
@@ -31,3 +31,12 @@ class UserContactLeadAdmin(admin.ModelAdmin):
     list_filter = ("source", "created_at")
     search_fields = ("user__username", "user__email", "name", "email", "phone")
     ordering = ("-created_at",)
+
+
+
+@admin.register(UserPortfolioItem)
+class UserPortfolioItemAdmin(admin.ModelAdmin):
+    list_display = ("user", "kind", "title", "is_active", "sort_order", "created_at")
+    list_filter = ("kind", "is_active")
+    search_fields = ("user__username", "user__email", "title", "source_url")
+    ordering = ("user", "sort_order", "-created_at")

@@ -2,7 +2,7 @@ from django.contrib.auth import get_user_model
 from urllib.parse import urlparse
 from rest_framework import serializers
 
-from .models import UserAppearance, UserContactLead, UserLink
+from .models import UserAppearance, UserContactLead, UserLink, UserPortfolioItem
 
 
 User = get_user_model()
@@ -39,7 +39,7 @@ class DashboardTrackSerializer(serializers.Serializer):
     count = serializers.IntegerField(min_value=1, default=1)
 
 
-class PublicTrackSerializer(serializers.Serializer):
+class PublicTrackSerializer(serializers.Serializer): 
     username = serializers.RegexField(
         regex=r"^[a-zA-Z0-9_]{3,30}$",
         error_messages={
@@ -98,3 +98,22 @@ class UserContactLeadSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserContactLead
         fields = ["id", "name", "email", "phone", "source", "created_at"]
+
+
+
+class UserPortfolioItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserPortfolioItem
+        fields = [
+            "id",
+            "kind",
+            "title",
+            "image_url",
+            "source_url",
+            "embed_html",
+            "description",
+            "is_active",
+            "sort_order",
+            "created_at",
+        ]
+        read_only_fields = ["id", "sort_order", "created_at"]

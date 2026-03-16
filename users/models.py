@@ -57,3 +57,30 @@ class UserContactLead(models.Model):
 
     def __str__(self):
         return f"{self.user.username} <- {self.name}"
+
+
+
+class UserPortfolioItem(models.Model):
+    KIND_UPLOAD = "upload"
+    KIND_SOCIAL = "social"
+    KIND_CHOICES = (
+        (KIND_UPLOAD, "Upload"),
+        (KIND_SOCIAL, "Social"),
+    )
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="portfolio_items")
+    kind = models.CharField(max_length=16, choices=KIND_CHOICES, default=KIND_UPLOAD)
+    title = models.CharField(max_length=120, blank=True, default="")
+    image_url = models.URLField(blank=True, default="")
+    source_url = models.URLField(max_length=500, blank=True, default="")
+    embed_html = models.TextField(blank=True, default="")
+    description = models.CharField(max_length=280, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    sort_order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["sort_order", "-created_at"]
+
+    def __str__(self):
+        return f"{self.user.username} portfolio<{self.kind}>"

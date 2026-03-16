@@ -1,10 +1,12 @@
 import os
 import json
 import tempfile
+import re
 from pathlib import Path
 from datetime import timedelta
 from uuid import uuid4
 from io import StringIO
+from urllib.parse import quote_plus, urlparse, parse_qs
 
 from django.contrib.auth import get_user_model
 from django.core.files.storage import default_storage
@@ -26,13 +28,14 @@ import firebase_admin
 from firebase_admin import auth as firebase_auth
 from firebase_admin import credentials
 
-from .models import UserAnalyticsDaily, UserAppearance, UserContactLead, UserLink
+from .models import UserAnalyticsDaily, UserAppearance, UserContactLead, UserLink, UserPortfolioItem
 from .serializers import (
     DashboardTrackSerializer,
     GoogleAuthSerializer,
     PublicTrackSerializer,
     PublicContactLeadSubmitSerializer,
     UserContactLeadSerializer,
+    UserPortfolioItemSerializer,
     UserAppearanceSerializer,
     UserLinkSerializer,
     UpdateMeSerializer,
@@ -95,6 +98,54 @@ def _build_temp_username() -> str:
     while User.objects.filter(username=candidate).exists():
         candidate = f"user_{get_random_string(10).lower()}"
     return candidate
+
+
+def _build_embed_html(source_url: str) -> str:
+    if not source_url:
+        return ""
+
+    normalized = source_url.strip()
+    parsed = urlparse(normalized)
+    host = (parsed.netloc or "").lower()
+
+    if "instagram.com" in host:
+        match = re.search(r"/((p|reel))/([A-Za-z0-9_-]+)", parsed.path)
+        if match:
+            shortcode = match.group(3)
+            kind = match.group(1)
+            embed_src = f"https://www.instagram.com/{kind}/{shortcode}/embed"
+            return (
+                f'<iframe src="{embed_src}" width="100%" height="480" '
+                'style="border:0;border-radius:12px;" loading="lazy" '
+                'referrerpolicy="no-referrer-when-downgrade" allowfullscreen></iframe>'
+            )
+
+    if "x.com" in host or "twitter.com" in host:
+        if "/status/" in parsed.path:
+            embed_src = f"https://twitframe.com/show?url={quote_plus(normalized)}"
+            return (
+                f'<iframe src="{embed_src}" width="100%" height="520" '
+                'style="border:0;border-radius:12px;" loading="lazy" allowfullscreen></iframe>'
+            )
+
+    if "youtube.com" in host or "youtu.be" in host:
+        video_id = ""
+        if "youtu.be" in host:
+            video_id = parsed.path.strip("/")
+        else:
+            query = parse_qs(parsed.query)
+            video_id = (query.get("v") or [""])[0]
+
+        if video_id:
+            embed_src = f"https://www.youtube.com/embed/{video_id}"
+            return (
+                f'<iframe src="{embed_src}" width="100%" height="360" '
+                'style="border:0;border-radius:12px;" loading="lazy" '
+                'allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" '
+                'referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>'
+            )
+
+    return ""
 
 
 class GoogleAuthView(APIView):
@@ -549,6 +600,100 @@ class UserLinksView(APIView):
         return Response(UserLinkSerializer(link).data, status=status.HTTP_201_CREATED)
 
 
+class UserPortfolioItemsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        items = UserPortfolioItem.objects.filter(user=request.user)
+        return Response(UserPortfolioItemSerializer(items, many=True).data)
+
+    def post(self, request):
+        serializer = UserPortfolioItemSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        next_sort_order = UserPortfolioItem.objects.filter(user=request.user).aggregate(
+            max_order=Coalesce(Max("sort_order"), 0)
+        )["max_order"] + 1
+
+        kind = serializer.validated_data.get("kind", UserPortfolioItem.KIND_SOCIAL)
+        source_url = serializer.validated_data.get("source_url", "")
+        embed_html = serializer.validated_data.get("embed_html", "")
+        if kind == UserPortfolioItem.KIND_SOCIAL and source_url and not embed_html:
+            embed_html = _build_embed_html(source_url)
+
+        item = UserPortfolioItem.objects.create(
+            user=request.user,
+            kind=kind,
+            title=serializer.validated_data.get("title", ""),
+            image_url=serializer.validated_data.get("image_url", ""),
+            source_url=source_url,
+            embed_html=embed_html,
+            description=serializer.validated_data.get("description", ""),
+            is_active=serializer.validated_data.get("is_active", True),
+            sort_order=next_sort_order,
+        )
+        return Response(UserPortfolioItemSerializer(item).data, status=status.HTTP_201_CREATED)
+
+
+class UserPortfolioUploadView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        file = request.FILES.get("image")
+        if not file:
+            return Response({"detail": "No image file provided"}, status=status.HTTP_400_BAD_REQUEST)
+
+        content_type = file.content_type or ""
+        if not content_type.startswith("image/"):
+            return Response({"detail": "Only image files are allowed"}, status=status.HTTP_400_BAD_REQUEST)
+
+        ext = os.path.splitext(file.name)[1] or ".jpg"
+        relative_path = f"portfolio/{request.user.id}/{uuid4().hex}{ext}"
+        saved_path = default_storage.save(relative_path, file)
+        image_url = request.build_absolute_uri(f"/media/{saved_path}")
+
+        next_sort_order = UserPortfolioItem.objects.filter(user=request.user).aggregate(
+            max_order=Coalesce(Max("sort_order"), 0)
+        )["max_order"] + 1
+
+        item = UserPortfolioItem.objects.create(
+            user=request.user,
+            kind=UserPortfolioItem.KIND_UPLOAD,
+            title=request.data.get("title", "").strip() or os.path.splitext(file.name)[0],
+            image_url=image_url,
+            is_active=True,
+            sort_order=next_sort_order,
+        )
+        return Response(UserPortfolioItemSerializer(item).data, status=status.HTTP_201_CREATED)
+
+
+class UserPortfolioItemDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, item_id):
+        item = UserPortfolioItem.objects.filter(user=request.user, id=item_id).first()
+        if not item:
+            return Response({"detail": "Portfolio item not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = UserPortfolioItemSerializer(instance=item, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        updated = serializer.save()
+
+        if updated.kind == UserPortfolioItem.KIND_SOCIAL and updated.source_url and not updated.embed_html:
+            updated.embed_html = _build_embed_html(updated.source_url)
+            updated.save(update_fields=["embed_html"])
+
+        return Response(UserPortfolioItemSerializer(updated).data)
+
+    def delete(self, request, item_id):
+        item = UserPortfolioItem.objects.filter(user=request.user, id=item_id).first()
+        if not item:
+            return Response({"detail": "Portfolio item not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        item.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 class PublicProfileView(APIView):
     permission_classes = [AllowAny]
 
@@ -563,6 +708,7 @@ class PublicProfileView(APIView):
 
         appearance = UserAppearance.objects.filter(user=user).first()
         active_links = UserLink.objects.filter(user=user, is_active=True).order_by("sort_order", "id")
+        active_portfolio = UserPortfolioItem.objects.filter(user=user, is_active=True).order_by("sort_order", "id")
 
         return Response(
             {
@@ -581,6 +727,18 @@ class PublicProfileView(APIView):
                         "url": link.url,
                     }
                     for link in active_links
+                ],
+                "portfolio": [
+                    {
+                        "id": item.id,
+                        "kind": item.kind,
+                        "title": item.title,
+                        "image_url": item.image_url,
+                        "source_url": item.source_url,
+                        "embed_html": item.embed_html,
+                        "description": item.description,
+                    }
+                    for item in active_portfolio
                 ],
             }
         )
