@@ -92,12 +92,13 @@ class PublicContactLeadSubmitSerializer(serializers.Serializer):
     name = serializers.CharField(max_length=120)
     email = serializers.EmailField()
     phone = serializers.CharField(max_length=32)
+    where_we_met = serializers.CharField(max_length=300, required=False, allow_blank=True, default="")
 
 
 class UserContactLeadSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserContactLead
-        fields = ["id", "name", "email", "phone", "source", "created_at"]
+        fields = ["id", "name", "email", "phone", "source", "tag", "note", "created_at"]
 
 
 

@@ -396,6 +396,7 @@ class PublicContactLeadSubmitView(APIView):
             email=serializer.validated_data["email"].strip(),
             phone=serializer.validated_data["phone"].strip(),
             source="public_profile",
+            note=serializer.validated_data.get("where_we_met", "").strip(),
         )
 
         return Response(UserContactLeadSerializer(lead).data, status=status.HTTP_201_CREATED)
@@ -407,6 +408,28 @@ class UserContactLeadsView(APIView):
     def get(self, request):
         leads = UserContactLead.objects.filter(user=request.user)
         return Response(UserContactLeadSerializer(leads, many=True).data)
+
+
+class UserContactLeadDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, lead_id):
+        lead = UserContactLead.objects.filter(user=request.user, id=lead_id).first()
+        if not lead:
+            return Response({"detail": "Contact lead not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = UserContactLeadSerializer(instance=lead, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def delete(self, request, lead_id):
+        lead = UserContactLead.objects.filter(user=request.user, id=lead_id).first()
+        if not lead:
+            return Response({"detail": "Contact lead not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        lead.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class UserDataExportView(APIView):
@@ -598,6 +621,28 @@ class UserLinksView(APIView):
             sort_order=next_sort_order,
         )
         return Response(UserLinkSerializer(link).data, status=status.HTTP_201_CREATED)
+
+
+class UserLinkDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, link_id):
+        link = UserLink.objects.filter(user=request.user, id=link_id).first()
+        if not link:
+            return Response({"detail": "Link not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = UserLinkSerializer(instance=link, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def delete(self, request, link_id):
+        link = UserLink.objects.filter(user=request.user, id=link_id).first()
+        if not link:
+            return Response({"detail": "Link not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        link.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class UserPortfolioItemsView(APIView):

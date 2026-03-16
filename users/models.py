@@ -45,11 +45,26 @@ class UserLink(models.Model):
 
 
 class UserContactLead(models.Model):
+    TAG_NEW = "new"
+    TAG_FOLLOW_UP = "follow_up"
+    TAG_CONTACTED = "contacted"
+    TAG_CLOSED = "closed"
+    TAG_LOST = "lost"
+    TAG_CHOICES = (
+        (TAG_NEW, "New"),
+        (TAG_FOLLOW_UP, "Follow up"),
+        (TAG_CONTACTED, "Contacted"),
+        (TAG_CLOSED, "Closed"),
+        (TAG_LOST, "Lost"),
+    )
+
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="contact_leads")
     name = models.CharField(max_length=120)
     email = models.EmailField()
     phone = models.CharField(max_length=32)
     source = models.CharField(max_length=64, default="public_profile")
+    tag = models.CharField(max_length=24, choices=TAG_CHOICES, default=TAG_NEW)
+    note = models.CharField(max_length=300, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
