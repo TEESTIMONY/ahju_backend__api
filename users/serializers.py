@@ -39,7 +39,7 @@ class DashboardTrackSerializer(serializers.Serializer):
     count = serializers.IntegerField(min_value=1, default=1)
 
 
-class PublicTrackSerializer(serializers.Serializer):
+class PublicTrackSerializer(serializers.Serializer): 
     username = serializers.RegexField(
         regex=r"^[a-zA-Z0-9_]{3,30}$",
         error_messages={
@@ -101,6 +101,7 @@ class UserContactLeadSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "email", "phone", "source", "tag", "note", "created_at"]
 
 
+
 class UserPortfolioItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserPortfolioItem
@@ -117,15 +118,3 @@ class UserPortfolioItemSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = ["id", "sort_order", "created_at"]
-
-
-class UserPortfolioImportSerializer(serializers.Serializer):
-    source_url = serializers.URLField(max_length=500)
-    max_images = serializers.IntegerField(min_value=1, max_value=10, required=False, default=10)
-    preview_only = serializers.BooleanField(required=False, default=False)
-    selected_images = serializers.ListField(
-        child=serializers.URLField(max_length=1000),
-        required=False,
-        allow_empty=True,
-        default=list,
-    )
