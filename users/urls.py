@@ -23,6 +23,7 @@ from .views import (
     PublicTrackEventView,
     SetUsernameView,
     UsernameAvailabilityView,
+    UserPortfolioImportImagesView,
 )
 
 
