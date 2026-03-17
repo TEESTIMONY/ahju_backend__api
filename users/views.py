@@ -6,7 +6,8 @@ from pathlib import Path
 from datetime import timedelta
 from uuid import uuid4
 from io import StringIO
-from urllib.parse import quote_plus, urlparse, parse_qs
+from urllib.parse import quote_plus, urlparse, parse_qs, urljoin, unquote
+from urllib.request import Request, urlopen
 
 from django.contrib.auth import get_user_model
 from django.core.files.storage import default_storage
@@ -36,6 +37,7 @@ from .serializers import (
     PublicContactLeadSubmitSerializer,
     UserContactLeadSerializer,
     UserPortfolioItemSerializer,
+    UserPortfolioImportSerializer,
     UserAppearanceSerializer,
     UserLinkSerializer,
     UpdateMeSerializer,
@@ -899,7 +901,7 @@ class UserPortfolioUploadView(APIView):
             sort_order=next_sort_order,
         )
         return Response(UserPortfolioItemSerializer(item).data, status=status.HTTP_201_CREATED)
-        
+
 class UserPortfolioImportImagesView(APIView):
     permission_classes = [IsAuthenticated]
 
