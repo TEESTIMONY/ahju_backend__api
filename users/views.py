@@ -147,6 +147,195 @@ def _build_embed_html(source_url: str) -> str:
 
     return ""
 
+def _fetch_html(url: str, timeout: int = 8) -> str:
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+    ]
+
+    for user_agent in user_agents:
+        request = Request(
+            url,
+            headers={
+                "User-Agent": user_agent,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+            },
+        )
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                raw = response.read()
+                charset = response.headers.get_content_charset() or "utf-8"
+                html = raw.decode(charset, errors="ignore")
+                if html:
+                    return html
+        except Exception:
+            continue
+
+    # Some sites block bot-like traffic or return dynamic-only shells.
+    # We fail gracefully so API returns a user-friendly 400 instead of 500.
+    return ""
+
+
+def _extract_image_urls_from_html(page_url: str, html: str):
+    if not html:
+        return []
+
+    urls = []
+
+    # Prefer metadata image hints first
+    meta_patterns = [
+        r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+property=["\']og:image:secure_url["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+itemprop=["\']image["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<link[^>]+rel=["\']image_src["\'][^>]+href=["\']([^"\']+)["\']',
+    ]
+    for pattern in meta_patterns:
+        for match in re.findall(pattern, html, flags=re.IGNORECASE):
+            urls.append(match.strip())
+
+    # General <img src="...">
+    for match in re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', html, flags=re.IGNORECASE):
+        urls.append(match.strip())
+
+    # Lazy-load and modern source attributes
+    extra_attr_patterns = [
+        r'<img[^>]+data-src=["\']([^"\']+)["\']',
+        r'<img[^>]+data-lazy-src=["\']([^"\']+)["\']',
+        r'<img[^>]+data-original=["\']([^"\']+)["\']',
+        r'<img[^>]+data-zoom-image=["\']([^"\']+)["\']',
+        r'<source[^>]+srcset=["\']([^"\']+)["\']',
+        r'<img[^>]+srcset=["\']([^"\']+)["\']',
+    ]
+    for pattern in extra_attr_patterns:
+        for match in re.findall(pattern, html, flags=re.IGNORECASE):
+            urls.append(match.strip())
+
+    # Parse srcset candidate lists.
+    # Split only on commas that likely start a new URL candidate,
+    # so Cloudinary transformations like `f_auto,q_auto` are not broken.
+    expanded_urls = []
+    for candidate in urls:
+        if "," in candidate and (" 1x" in candidate or " 2x" in candidate or "w" in candidate):
+            parts = [part.strip() for part in re.split(r",\s*(?=(?:https?:|//|/))", candidate) if part.strip()]
+            for part in parts:
+                expanded_urls.append(part.split(" ")[0].strip())
+        else:
+            expanded_urls.append(candidate)
+    urls = expanded_urls
+
+    # Script-embedded absolute image URLs (JSON/JS blobs)
+    for match in re.findall(
+        r"https?://[^\s\"'<>]+\.(?:jpg|jpeg|png|webp|gif|avif|bmp|svg)(?:\?[^\s\"'<>]*)?",
+        html,
+        flags=re.IGNORECASE,
+    ):
+        urls.append(match.strip())
+
+    # Escaped URLs from JSON strings
+    for match in re.findall(
+        r"https?:\\/\\/[^\s\"'<>]+\.(?:jpg|jpeg|png|webp|gif|avif|bmp|svg)(?:\\?[^\s\"'<>]*)?",
+        html,
+        flags=re.IGNORECASE,
+    ):
+        urls.append(match.replace("\\/", "/").strip())
+
+    normalized = []
+    seen = set()
+    for raw in urls:
+        if not raw or raw.startswith("data:"):
+            continue
+        absolute = urljoin(page_url, raw)
+
+        # Normalize Next.js image optimizer URLs to the underlying source image URL.
+        parsed_absolute = urlparse(absolute)
+        if "/_next/image" in (parsed_absolute.path or ""):
+            source_param = (parse_qs(parsed_absolute.query).get("url") or [""])[0]
+            if source_param:
+                absolute = urljoin(page_url, unquote(source_param))
+
+        lowered = absolute.lower()
+        if lowered.startswith("javascript:"):
+            continue
+
+        # Skip clearly incomplete transformation-only image URLs.
+        if lowered.endswith("/f_auto") or lowered.endswith("/q_auto") or lowered.endswith("/image/upload"):
+            continue
+
+        # Keep common image formats and CDN image links with query params
+        looks_like_image = bool(
+            re.search(r"\.(jpg|jpeg|png|webp|gif|avif|bmp|svg)(\?.*)?$", lowered)
+            or any(token in lowered for token in ["/image", "/images", "cdn", "cloudfront", "media"]) 
+        )
+        if not looks_like_image:
+            continue
+        if absolute in seen:
+            continue
+        seen.add(absolute)
+        normalized.append(absolute)
+        if len(normalized) >= 2000:
+            break
+
+    return normalized
+
+
+def _collect_shop_or_store_images(source_url: str, max_images: int | None = None):
+    html = _fetch_html(source_url)
+    images = _extract_image_urls_from_html(source_url, html)
+    if max_images is None:
+        return images
+    return images[:max_images]
+
+
+def _collect_instagram_images_with_graph_api(source_url: str, max_images: int):
+    """
+    API-ready path: requires env variables configured for Meta Graph access.
+    If not configured or request fails, returns [] and caller can fallback.
+    """
+    token = os.getenv("INSTAGRAM_GRAPH_ACCESS_TOKEN", "").strip()
+    business_account_id = os.getenv("INSTAGRAM_BUSINESS_ACCOUNT_ID", "").strip()
+    if not token or not business_account_id:
+        return []
+
+    graph_url = (
+        f"https://graph.facebook.com/v22.0/{business_account_id}/media"
+        f"?fields=id,media_type,media_url,thumbnail_url,timestamp,permalink"
+        f"&limit={max_images}&access_token={quote_plus(token)}"
+    )
+
+    try:
+        request = Request(graph_url, headers={"User-Agent": "AHJU/1.0"})
+        with urlopen(request, timeout=8) as response:
+            data = json.loads(response.read().decode("utf-8", errors="ignore"))
+    except Exception:
+        return []
+
+    images = []
+    for item in (data.get("data") or []):
+        media_type = (item.get("media_type") or "").upper()
+        if media_type not in {"IMAGE", "CAROUSEL_ALBUM", "VIDEO"}:
+            continue
+        url = item.get("media_url") or item.get("thumbnail_url")
+        if url:
+            images.append(url)
+        if len(images) >= max_images:
+            break
+    return images
+
+
+def _collect_social_images(source_url: str, max_images: int | None = None):
+    host = (urlparse(source_url).netloc or "").lower()
+    effective_limit = max_images if isinstance(max_images, int) and max_images > 0 else 100
+    if "instagram.com" in host:
+        api_images = _collect_instagram_images_with_graph_api(source_url, effective_limit)
+        if api_images:
+            return api_images
+
+    # Fallback (works for some public pages/sites, not guaranteed for heavily JS pages)
+    return _collect_shop_or_store_images(source_url, max_images)
 
 class GoogleAuthView(APIView):
     permission_classes = [AllowAny]
@@ -710,7 +899,95 @@ class UserPortfolioUploadView(APIView):
             sort_order=next_sort_order,
         )
         return Response(UserPortfolioItemSerializer(item).data, status=status.HTTP_201_CREATED)
+        
+class UserPortfolioImportImagesView(APIView):
+    permission_classes = [IsAuthenticated]
 
+    def post(self, request):
+        serializer = UserPortfolioImportSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        source_url = serializer.validated_data["source_url"].strip()
+        max_images = min(serializer.validated_data.get("max_images", 10), 10)
+        preview_only = serializer.validated_data.get("preview_only", False)
+        selected_images = serializer.validated_data.get("selected_images", [])
+
+        host = (urlparse(source_url).netloc or "").lower()
+        is_social_source = any(
+            token in host
+            for token in ["instagram.com", "x.com", "twitter.com", "facebook.com", "tiktok.com", "youtube.com", "youtu.be"]
+        )
+
+        # Preview/select mode should inspect a broad set of images from the page,
+        # while final import is capped to max_images (<=10).
+        should_fetch_broad = preview_only or bool(selected_images)
+        fetch_limit = None if should_fetch_broad else max_images
+
+        if is_social_source:
+            candidate_urls = _collect_social_images(source_url, fetch_limit)
+        else:
+            candidate_urls = _collect_shop_or_store_images(source_url, fetch_limit)
+
+        if not candidate_urls:
+            return Response(
+                {
+                    "detail": "Could not extract images from this URL. The site may block automated access or render images only with JavaScript. Try another URL from the same site.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        available_urls = candidate_urls
+
+        if preview_only:
+            return Response(
+                {
+                    "count": len(available_urls),
+                    "images": available_urls,
+                    "max_images": max_images,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        if selected_images:
+            available_set = set(available_urls)
+            chosen_urls = []
+            for image_url in selected_images:
+                if image_url in available_set and image_url not in chosen_urls:
+                    chosen_urls.append(image_url)
+            chosen_urls = chosen_urls[:max_images]
+            if not chosen_urls:
+                return Response(
+                    {"detail": "No valid selected images were provided for this source URL."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            chosen_urls = available_urls[:max_images]
+
+        created_items = []
+        next_sort_order = UserPortfolioItem.objects.filter(user=request.user).aggregate(
+            max_order=Coalesce(Max("sort_order"), 0)
+        )["max_order"] + 1
+
+        for image_url in chosen_urls:
+            item = UserPortfolioItem.objects.create(
+                user=request.user,
+                kind=UserPortfolioItem.KIND_UPLOAD,
+                title="Imported from source",
+                image_url=image_url,
+                source_url=source_url,
+                is_active=True,
+                sort_order=next_sort_order,
+            )
+            next_sort_order += 1
+            created_items.append(item)
+
+        return Response(
+            {
+                "count": len(created_items),
+                "items": UserPortfolioItemSerializer(created_items, many=True).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 class UserPortfolioItemDetailView(APIView):
     permission_classes = [IsAuthenticated]

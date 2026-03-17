@@ -118,3 +118,14 @@ class UserPortfolioItemSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = ["id", "sort_order", "created_at"]
+
+class UserPortfolioImportSerializer(serializers.Serializer):
+    source_url = serializers.URLField(max_length=500)
+    max_images = serializers.IntegerField(min_value=1, max_value=10, required=False, default=10)
+    preview_only = serializers.BooleanField(required=False, default=False)
+    selected_images = serializers.ListField(
+        child=serializers.URLField(max_length=1000),
+        required=False,
+        allow_empty=True,
+        default=list,
+    )
