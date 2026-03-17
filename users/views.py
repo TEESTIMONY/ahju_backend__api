@@ -641,7 +641,7 @@ class UserDataExportView(APIView):
                 "service": "ahju-backend",
             },
             "user": UserSerializer(user).data,
-            "appearance": UserAppearanceSerializer(appearance).data,
+            "appearance": UserAppearanceSerializer(appearance, context={"request": request}).data,
             "links": UserLinkSerializer(links, many=True).data,
             "contacts": UserContactLeadSerializer(contacts, many=True).data,
             "analytics_daily": [
@@ -732,11 +732,16 @@ class UserAppearanceView(APIView):
 
     def get(self, request):
         appearance, _ = UserAppearance.objects.get_or_create(user=request.user)
-        return Response(UserAppearanceSerializer(appearance).data)
+        return Response(UserAppearanceSerializer(appearance, context={"request": request}).data)
 
     def patch(self, request):
         appearance, _ = UserAppearance.objects.get_or_create(user=request.user)
-        serializer = UserAppearanceSerializer(instance=appearance, data=request.data, partial=True)
+        serializer = UserAppearanceSerializer(
+            instance=appearance,
+            data=request.data,
+            partial=True,
+            context={"request": request},
+        )
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
@@ -757,17 +762,19 @@ class UserAppearanceView(APIView):
         ext = os.path.splitext(file.name)[1] or ".jpg"
         relative_path = f"appearance/{request.user.id}/{uuid4().hex}{ext}"
         saved_path = default_storage.save(relative_path, file)
-        image_url = request.build_absolute_uri(f"/media/{saved_path}")
+        # Store relative media path so it works across devices/environments.
+        # Serializer will return an absolute URL for the current request host.
+        stored_path = saved_path
 
         appearance, _ = UserAppearance.objects.get_or_create(user=request.user)
         if target == "profile":
-            appearance.profile_image_url = image_url
+            appearance.profile_image_url = stored_path
             appearance.save(update_fields=["profile_image_url"])
         else:
-            appearance.hero_image_url = image_url
+            appearance.hero_image_url = stored_path
             appearance.save(update_fields=["hero_image_url"])
 
-        return Response({"url": image_url}, status=status.HTTP_201_CREATED)
+        return Response({"url": request.build_absolute_uri(f"/media/{saved_path}")}, status=status.HTTP_201_CREATED)
 
 
 class UserAppearanceImageUploadView(APIView):
@@ -785,9 +792,8 @@ class UserAppearanceImageUploadView(APIView):
         ext = os.path.splitext(file.name)[1] or ".jpg"
         relative_path = f"appearance/{request.user.id}/{uuid4().hex}{ext}"
         saved_path = default_storage.save(relative_path, file)
-        image_url = request.build_absolute_uri(f"/media/{saved_path}")
-
-        return Response({"url": image_url}, status=status.HTTP_201_CREATED)
+        # Return absolute URL for client, but persist only relative path in models.
+        return Response({"url": request.build_absolute_uri(f"/media/{saved_path}")}, status=status.HTTP_201_CREATED)
 
 
 class UserLinksView(APIView):
@@ -841,7 +847,7 @@ class UserPortfolioItemsView(APIView):
 
     def get(self, request):
         items = UserPortfolioItem.objects.filter(user=request.user)
-        return Response(UserPortfolioItemSerializer(items, many=True).data)
+        return Response(UserPortfolioItemSerializer(items, many=True, context={"request": request}).data)
 
     def post(self, request):
         serializer = UserPortfolioItemSerializer(data=request.data)
@@ -868,7 +874,10 @@ class UserPortfolioItemsView(APIView):
             is_active=serializer.validated_data.get("is_active", True),
             sort_order=next_sort_order,
         )
-        return Response(UserPortfolioItemSerializer(item).data, status=status.HTTP_201_CREATED)
+        return Response(
+            UserPortfolioItemSerializer(item, context={"request": request}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class UserPortfolioUploadView(APIView):
@@ -886,7 +895,9 @@ class UserPortfolioUploadView(APIView):
         ext = os.path.splitext(file.name)[1] or ".jpg"
         relative_path = f"portfolio/{request.user.id}/{uuid4().hex}{ext}"
         saved_path = default_storage.save(relative_path, file)
-        image_url = request.build_absolute_uri(f"/media/{saved_path}")
+        # Store relative media path so it works across devices/environments.
+        # Serializer will return an absolute URL for the current request host.
+        stored_path = saved_path
 
         next_sort_order = UserPortfolioItem.objects.filter(user=request.user).aggregate(
             max_order=Coalesce(Max("sort_order"), 0)
@@ -896,11 +907,14 @@ class UserPortfolioUploadView(APIView):
             user=request.user,
             kind=UserPortfolioItem.KIND_UPLOAD,
             title=request.data.get("title", "").strip() or os.path.splitext(file.name)[0],
-            image_url=image_url,
+            image_url=stored_path,
             is_active=True,
             sort_order=next_sort_order,
         )
-        return Response(UserPortfolioItemSerializer(item).data, status=status.HTTP_201_CREATED)
+        return Response(
+            UserPortfolioItemSerializer(item, context={"request": request}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 class UserPortfolioImportImagesView(APIView):
     permission_classes = [IsAuthenticated]
@@ -986,7 +1000,7 @@ class UserPortfolioImportImagesView(APIView):
         return Response(
             {
                 "count": len(created_items),
-                "items": UserPortfolioItemSerializer(created_items, many=True).data,
+                "items": UserPortfolioItemSerializer(created_items, many=True, context={"request": request}).data,
             },
             status=status.HTTP_201_CREATED,
         )
@@ -999,7 +1013,12 @@ class UserPortfolioItemDetailView(APIView):
         if not item:
             return Response({"detail": "Portfolio item not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        serializer = UserPortfolioItemSerializer(instance=item, data=request.data, partial=True)
+        serializer = UserPortfolioItemSerializer(
+            instance=item,
+            data=request.data,
+            partial=True,
+            context={"request": request},
+        )
         serializer.is_valid(raise_exception=True)
         updated = serializer.save()
 
@@ -1007,7 +1026,7 @@ class UserPortfolioItemDetailView(APIView):
             updated.embed_html = _build_embed_html(updated.source_url)
             updated.save(update_fields=["embed_html"])
 
-        return Response(UserPortfolioItemSerializer(updated).data)
+        return Response(UserPortfolioItemSerializer(updated, context={"request": request}).data)
 
     def delete(self, request, item_id):
         item = UserPortfolioItem.objects.filter(user=request.user, id=item_id).first()
@@ -1034,16 +1053,20 @@ class PublicProfileView(APIView):
         active_links = UserLink.objects.filter(user=user, is_active=True).order_by("sort_order", "id")
         active_portfolio = UserPortfolioItem.objects.filter(user=user, is_active=True).order_by("sort_order", "id")
 
+        appearance_payload = None
+        if appearance:
+            appearance_payload = UserAppearanceSerializer(appearance, context={"request": request}).data
+
         return Response(
             {
                 "username": user.username,
-                "display_name": appearance.display_name if appearance else f"@{user.username}",
-                "short_bio": appearance.short_bio if appearance else "",
-                "profile_image_url": appearance.profile_image_url if appearance else "",
-                "hero_image_url": appearance.hero_image_url if appearance else "",
-                "selected_theme": appearance.selected_theme if appearance else "minimal-light",
-                "name_font": appearance.name_font if appearance else "Inter, sans-serif",
-                "name_color": appearance.name_color if appearance else "#223136",
+                "display_name": appearance_payload.get("display_name") if appearance_payload else f"@{user.username}",
+                "short_bio": appearance_payload.get("short_bio") if appearance_payload else "",
+                "profile_image_url": appearance_payload.get("profile_image_url") if appearance_payload else "",
+                "hero_image_url": appearance_payload.get("hero_image_url") if appearance_payload else "",
+                "selected_theme": appearance_payload.get("selected_theme") if appearance_payload else "minimal-light",
+                "name_font": appearance_payload.get("name_font") if appearance_payload else "Inter, sans-serif",
+                "name_color": appearance_payload.get("name_color") if appearance_payload else "#223136",
                 "links": [
                     {
                         "id": link.id,
@@ -1052,17 +1075,10 @@ class PublicProfileView(APIView):
                     }
                     for link in active_links
                 ],
-                "portfolio": [
-                    {
-                        "id": item.id,
-                        "kind": item.kind,
-                        "title": item.title,
-                        "image_url": item.image_url,
-                        "source_url": item.source_url,
-                        "embed_html": item.embed_html,
-                        "description": item.description,
-                    }
-                    for item in active_portfolio
-                ],
+                "portfolio": UserPortfolioItemSerializer(
+                    active_portfolio,
+                    many=True,
+                    context={"request": request},
+                ).data,
             }
         )
