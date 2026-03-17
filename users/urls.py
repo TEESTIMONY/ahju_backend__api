@@ -37,6 +37,7 @@ urlpatterns = [
     path("users/links/<int:link_id>/", UserLinkDetailView.as_view(), name="users-link-detail"),
     path("users/portfolio/", UserPortfolioItemsView.as_view(), name="users-portfolio"),
     path("users/portfolio/upload/", UserPortfolioUploadView.as_view(), name="users-portfolio-upload"),
+    path("users/portfolio/import-images/", UserPortfolioImportImagesView.as_view(), name="users-portfolio-import-images"),
     path("users/portfolio/<int:item_id>/", UserPortfolioItemDetailView.as_view(), name="users-portfolio-detail"),
     path("users/contacts/", UserContactLeadsView.as_view(), name="users-contacts"),
     path("users/contacts/<int:lead_id>/", UserContactLeadDetailView.as_view(), name="users-contact-detail"),
