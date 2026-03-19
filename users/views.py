@@ -774,7 +774,10 @@ class UserAppearanceView(APIView):
             appearance.hero_image_url = stored_path
             appearance.save(update_fields=["hero_image_url"])
 
-        return Response({"url": request.build_absolute_uri(f"/media/{saved_path}")}, status=status.HTTP_201_CREATED)
+        saved_url = default_storage.url(saved_path)
+        if not (saved_url.startswith("http://") or saved_url.startswith("https://")):
+            saved_url = request.build_absolute_uri(saved_url)
+        return Response({"url": saved_url}, status=status.HTTP_201_CREATED)
 
 
 class UserAppearanceImageUploadView(APIView):
@@ -792,8 +795,10 @@ class UserAppearanceImageUploadView(APIView):
         ext = os.path.splitext(file.name)[1] or ".jpg"
         relative_path = f"appearance/{request.user.id}/{uuid4().hex}{ext}"
         saved_path = default_storage.save(relative_path, file)
-        # Return absolute URL for client, but persist only relative path in models.
-        return Response({"url": request.build_absolute_uri(f"/media/{saved_path}")}, status=status.HTTP_201_CREATED)
+        saved_url = default_storage.url(saved_path)
+        if not (saved_url.startswith("http://") or saved_url.startswith("https://")):
+            saved_url = request.build_absolute_uri(saved_url)
+        return Response({"url": saved_url}, status=status.HTTP_201_CREATED)
 
 
 class UserLinksView(APIView):

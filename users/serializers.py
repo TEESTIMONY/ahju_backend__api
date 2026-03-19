@@ -3,6 +3,7 @@ from urllib.parse import urlparse
 from rest_framework import serializers
 
 from django.conf import settings
+from django.core.files.storage import default_storage
 
 from .models import UserAppearance, UserContactLead, UserLink, UserPortfolioItem
 
@@ -11,19 +12,13 @@ User = get_user_model()
 
 
 def _absolute_media_url(request, value: str) -> str:
-    """Return absolute URL for a stored image reference.
-
-    We store uploaded image references as relative paths (recommended),
-    but older data may contain absolute URLs. This helper normalizes both.
-    """
+    """Return an absolute URL for a stored image reference."""
 
     raw = (value or "").strip()
     if not raw:
         return ""
 
-    # Already absolute
-    # BUT: older data might have been stored with a localhost/base URL (e.g. http://127.0.0.1:8000/media/...).
-    # In that case, rewrite to the current request host so images work across devices/environments.
+    # Already absolute. Rewrite to the current request host if the path lives under MEDIA_URL
     if raw.startswith("http://") or raw.startswith("https://"):
         try:
             parsed = urlparse(raw)
@@ -37,27 +32,21 @@ def _absolute_media_url(request, value: str) -> str:
                     return relative
                 return request.build_absolute_uri(relative)
         except Exception:
-            # Fall back to returning the raw absolute URL.
             pass
         return raw
 
-    # Normalize common stored forms:
-    # - "/media/..."
-    # - "media/..."
-    # - "appearance/..." (path returned by FileSystemStorage)
-    if raw.startswith(settings.MEDIA_URL):
-        relative = raw
-    elif raw.startswith("/"):
-        relative = raw
-    elif raw.startswith("media/"):
-        relative = f"/{raw}"
-    else:
-        relative = f"{settings.MEDIA_URL}{raw}"
+    try:
+        storage_url = default_storage.url(raw)
+    except Exception:
+        storage_url = raw
+
+    if storage_url.startswith("http://") or storage_url.startswith("https://"):
+        return storage_url
 
     if request is None:
-        return relative
+        return storage_url
 
-    return request.build_absolute_uri(relative)
+    return request.build_absolute_uri(storage_url)
 
 
 class UserSerializer(serializers.ModelSerializer):

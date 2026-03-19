@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import json
 import hashlib
 from dotenv import load_dotenv
 
@@ -7,6 +8,11 @@ try:
     import dj_database_url
 except Exception:  # pragma: no cover
     dj_database_url = None
+
+try:
+    from google.oauth2 import service_account
+except Exception:  # pragma: no cover
+    service_account = None
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -29,6 +35,31 @@ SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "django-insecure-change-me")
 DEBUG = env_bool("DJANGO_DEBUG", True)
 ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost")
 RENDER = env_bool("RENDER", False)
+GOOGLE_CLOUD_STORAGE_BUCKET = os.getenv("GOOGLE_CLOUD_STORAGE_BUCKET") or os.getenv("FIREBASE_STORAGE_BUCKET")
+GOOGLE_CLOUD_PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT_ID")
+GOOGLE_CLOUD_STORAGE_CREDENTIALS_JSON = os.getenv("GOOGLE_CLOUD_STORAGE_CREDENTIALS_JSON") or os.getenv("FIREBASE_CREDENTIALS_JSON")
+GOOGLE_CLOUD_STORAGE_CREDENTIALS_PATH = os.getenv("GOOGLE_CLOUD_STORAGE_CREDENTIALS") or os.getenv("FIREBASE_CREDENTIALS")
+GOOGLE_CLOUD_STORAGE_CREDENTIALS = None
+
+if service_account:
+    if GOOGLE_CLOUD_STORAGE_CREDENTIALS_JSON:
+        try:
+            GOOGLE_CLOUD_STORAGE_CREDENTIALS = service_account.Credentials.from_service_account_info(
+                json.loads(GOOGLE_CLOUD_STORAGE_CREDENTIALS_JSON)
+            )
+            if not GOOGLE_CLOUD_PROJECT_ID:
+                GOOGLE_CLOUD_PROJECT_ID = getattr(GOOGLE_CLOUD_STORAGE_CREDENTIALS, "project_id", None)
+        except (ValueError, TypeError):
+            GOOGLE_CLOUD_STORAGE_CREDENTIALS = None
+    if not GOOGLE_CLOUD_STORAGE_CREDENTIALS and GOOGLE_CLOUD_STORAGE_CREDENTIALS_PATH:
+        try:
+            GOOGLE_CLOUD_STORAGE_CREDENTIALS = service_account.Credentials.from_service_account_file(
+                GOOGLE_CLOUD_STORAGE_CREDENTIALS_PATH
+            )
+            if not GOOGLE_CLOUD_PROJECT_ID:
+                GOOGLE_CLOUD_PROJECT_ID = getattr(GOOGLE_CLOUD_STORAGE_CREDENTIALS, "project_id", None)
+        except FileNotFoundError:
+            GOOGLE_CLOUD_STORAGE_CREDENTIALS = None
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -107,18 +138,38 @@ USE_TZ = True
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
-if RENDER:
-    STORAGES = {
-        "default": {
-            "BACKEND": "django.core.files.storage.FileSystemStorage",
-        },
-        "staticfiles": {
-            "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
-        },
-    }
+USE_GOOGLE_CLOUD_STORAGE = bool(
+    GOOGLE_CLOUD_STORAGE_BUCKET and GOOGLE_CLOUD_STORAGE_CREDENTIALS
+)
 
-MEDIA_URL = "/media/"
 MEDIA_ROOT = Path(os.getenv("DJANGO_MEDIA_ROOT", BASE_DIR / "media"))
+MEDIA_URL = f"https://storage.googleapis.com/{GOOGLE_CLOUD_STORAGE_BUCKET}/" if USE_GOOGLE_CLOUD_STORAGE else "/media/"
+
+STORAGES = {
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage" if RENDER else "django.contrib.staticfiles.storage.StaticFilesStorage",
+    },
+}
+
+if USE_GOOGLE_CLOUD_STORAGE:
+    DEFAULT_FILE_STORAGE = "storages.backends.gcloud.GoogleCloudStorage"
+    GS_BUCKET_NAME = GOOGLE_CLOUD_STORAGE_BUCKET
+    GS_PROJECT_ID = GOOGLE_CLOUD_PROJECT_ID
+    GS_CREDENTIALS = GOOGLE_CLOUD_STORAGE_CREDENTIALS
+    GS_DEFAULT_ACL = "publicRead"
+    STORAGES["default"] = {
+        "BACKEND": "storages.backends.gcloud.GoogleCloudStorage",
+        "BUCKET_NAME": GS_BUCKET_NAME,
+        "PROJECT_ID": GS_PROJECT_ID,
+        "CREDENTIALS": GS_CREDENTIALS,
+        "DEFAULT_ACL": GS_DEFAULT_ACL,
+    }
+else:
+    STORAGES["default"] = {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+        "LOCATION": str(MEDIA_ROOT),
+        "BASE_URL": MEDIA_URL,
+    }
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
