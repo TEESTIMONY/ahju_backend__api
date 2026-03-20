@@ -4,7 +4,6 @@ import tempfile
 import re
 from pathlib import Path
 from datetime import timedelta
-from uuid import uuid4
 from io import StringIO
 from urllib.parse import quote_plus, urlparse, parse_qs, urljoin, unquote
 from urllib.request import Request, urlopen
@@ -759,8 +758,8 @@ class UserAppearanceView(APIView):
         if not content_type.startswith("image/"):
             return Response({"detail": "Only image files are allowed"}, status=status.HTTP_400_BAD_REQUEST)
 
-        ext = os.path.splitext(file.name)[1] or ".jpg"
-        relative_path = f"appearance/{request.user.id}/{uuid4().hex}{ext}"
+        original_name = Path(file.name).name
+        relative_path = f"appearance/{request.user.id}/{original_name}"
         saved_path = default_storage.save(relative_path, file)
         # Store relative media path so it works across devices/environments.
         # Serializer will return an absolute URL for the current request host.
@@ -792,8 +791,8 @@ class UserAppearanceImageUploadView(APIView):
         if not content_type.startswith("image/"):
             return Response({"detail": "Only image files are allowed"}, status=status.HTTP_400_BAD_REQUEST)
 
-        ext = os.path.splitext(file.name)[1] or ".jpg"
-        relative_path = f"appearance/{request.user.id}/{uuid4().hex}{ext}"
+        original_name = Path(file.name).name
+        relative_path = f"appearance/{request.user.id}/{original_name}"
         saved_path = default_storage.save(relative_path, file)
         saved_url = default_storage.url(saved_path)
         if not (saved_url.startswith("http://") or saved_url.startswith("https://")):
@@ -897,8 +896,8 @@ class UserPortfolioUploadView(APIView):
         if not content_type.startswith("image/"):
             return Response({"detail": "Only image files are allowed"}, status=status.HTTP_400_BAD_REQUEST)
 
-        ext = os.path.splitext(file.name)[1] or ".jpg"
-        relative_path = f"portfolio/{request.user.id}/{uuid4().hex}{ext}"
+        original_name = Path(file.name).name
+        relative_path = f"portfolio/{request.user.id}/{original_name}"
         saved_path = default_storage.save(relative_path, file)
         # Store relative media path so it works across devices/environments.
         # Serializer will return an absolute URL for the current request host.
