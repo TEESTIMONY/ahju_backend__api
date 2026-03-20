@@ -3,9 +3,14 @@ services:
     name: ahju-backend
     env: python
     rootDir: .
+    disks:
+      - name: media
+        mountPath: /var/data
+        sizeGB: 1
     buildCommand: pip install -r requirements.txt
     startCommand: >-
-      sh -c "python manage.py migrate &&
+      sh -c "mkdir -p /var/data/media &&
+      python manage.py migrate &&
       python manage.py collectstatic --noinput &&
       gunicorn config.wsgi:application --bind 0.0.0.0:$PORT"
     autoDeploy: true
@@ -15,5 +20,7 @@ services:
         value: "False"
       - key: RENDER
         value: "True"
+      - key: DJANGO_MEDIA_ROOT
+        value: "/var/data/media"
       - key: DJANGO_ALLOWED_HOSTS
         value: "ahju-backend.onrender.com"

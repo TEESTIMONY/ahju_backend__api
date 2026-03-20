@@ -138,7 +138,9 @@ USE_TZ = True
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
-USE_GOOGLE_CLOUD_STORAGE = bool(
+# Keep local filesystem media as default (Render + persistent disk workflow).
+# Enable Google Cloud Storage only when explicitly opted in.
+USE_GOOGLE_CLOUD_STORAGE = env_bool("USE_GOOGLE_CLOUD_STORAGE", False) and bool(
     GOOGLE_CLOUD_STORAGE_BUCKET and GOOGLE_CLOUD_STORAGE_CREDENTIALS
 )
 
