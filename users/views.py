@@ -12,7 +12,7 @@ from django.contrib.auth import get_user_model
 from django.core.files.storage import default_storage
 from django.core.management import call_command
 from django.db import IntegrityError, transaction, connection
-from django.db.models import F, Max, Sum
+from django.db.models import Count, F, Max, Sum
 from django.db.models.functions import Coalesce
 from django.utils.crypto import get_random_string
 from django.utils.text import slugify
@@ -494,19 +494,18 @@ class DashboardSummaryView(APIView):
         totals = request.user.analytics_daily.aggregate(
             total_views=Coalesce(Sum("views"), 0),
             total_clicks=Coalesce(Sum("clicks"), 0),
-            total_card_taps=Coalesce(Sum("card_taps"), 0),
         )
+        total_leads = request.user.contact_leads.count()
 
         total_views = totals["total_views"]
         total_clicks = totals["total_clicks"]
-        total_card_taps = totals["total_card_taps"]
         ctr = round((total_clicks / total_views) * 100, 1) if total_views else 0.0
 
         return Response(
             {
                 "total_views": total_views,
                 "total_clicks": total_clicks,
-                "total_card_taps": total_card_taps,
+                "total_leads": total_leads,
                 "ctr": ctr,
             }
         )
@@ -520,6 +519,15 @@ class DashboardTimeseriesView(APIView):
         start_date = today - timedelta(days=6)
         rows = request.user.analytics_daily.filter(date__gte=start_date, date__lte=today)
         by_date = {row.date: row for row in rows}
+        leads_by_date = {
+            row["created_at__date"]: row["count"]
+            for row in request.user.contact_leads.filter(
+                created_at__date__gte=start_date,
+                created_at__date__lte=today,
+            )
+            .values("created_at__date")
+            .annotate(count=Count("id"))
+        }
 
         data = []
         for i in range(7):
@@ -530,7 +538,7 @@ class DashboardTimeseriesView(APIView):
                     "day": date.strftime("%a"),
                     "views": row.views if row else 0,
                     "clicks": row.clicks if row else 0,
-                    "cardTaps": row.card_taps if row else 0,
+                    "leads": leads_by_date.get(date, 0),
                 }
             )
 
