@@ -88,3 +88,44 @@ Firebase (choose one):
 - Static files are served via WhiteNoise in Render mode (`RENDER=True`).
 - SSL/cookie security settings auto-enable in Render mode unless overridden.
 - On deploy, migrations and collectstatic run automatically from start command.
+
+## Deploying backend on Koyeb
+
+Create a **Web Service** on Koyeb from this repository and use:
+
+- Environment: **Python**
+- Build command:
+
+```bash
+pip install -r requirements.txt
+```
+
+- Run command:
+
+```bash
+python manage.py migrate && python manage.py collectstatic --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT
+```
+
+### Required environment variables on Koyeb
+
+- `DJANGO_SECRET_KEY` = strong random secret
+- `JWT_SIGNING_KEY` = long random value (>= 32 chars)
+- `DJANGO_DEBUG` = `False`
+- `KOYEB` = `True`
+- `DJANGO_ALLOWED_HOSTS` = your koyeb domain(s), comma-separated
+  - example: `your-app-your-org.koyeb.app`
+- `CORS_ALLOWED_ORIGINS` = frontend origins, comma-separated
+- `CSRF_TRUSTED_ORIGINS` = same https frontend origins
+
+Database:
+- `DATABASE_URL` (recommended in production)
+
+Firebase:
+- `FIREBASE_CREDENTIALS_JSON` (recommended): full service account JSON string
+- OR `FIREBASE_CREDENTIALS` path to credentials file
+
+### Koyeb notes
+
+- This project now supports `KOYEB=True` for production security/static defaults.
+- WhiteNoise and secure-cookie/SSL settings are enabled automatically when `KOYEB=True` and `DJANGO_DEBUG=False`.
+- Ensure your Koyeb domain is included in `DJANGO_ALLOWED_HOSTS`.

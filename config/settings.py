@@ -35,6 +35,8 @@ SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "django-insecure-change-me")
 DEBUG = env_bool("DJANGO_DEBUG", True)
 ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost")
 RENDER = env_bool("RENDER", False)
+KOYEB = env_bool("KOYEB", False)
+DEPLOYED_ENV = RENDER or KOYEB
 GOOGLE_CLOUD_STORAGE_BUCKET = os.getenv("GOOGLE_CLOUD_STORAGE_BUCKET") or os.getenv("FIREBASE_STORAGE_BUCKET")
 GOOGLE_CLOUD_PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT_ID")
 GOOGLE_CLOUD_STORAGE_CREDENTIALS_JSON = os.getenv("GOOGLE_CLOUD_STORAGE_CREDENTIALS_JSON") or os.getenv("FIREBASE_CREDENTIALS_JSON")
@@ -85,7 +87,7 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
-if RENDER:
+if DEPLOYED_ENV:
     MIDDLEWARE.insert(2, "whitenoise.middleware.WhiteNoiseMiddleware")
 
 ROOT_URLCONF = "config.urls"
@@ -149,7 +151,7 @@ MEDIA_URL = f"https://storage.googleapis.com/{GOOGLE_CLOUD_STORAGE_BUCKET}/" if 
 
 STORAGES = {
     "staticfiles": {
-        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage" if RENDER else "django.contrib.staticfiles.storage.StaticFilesStorage",
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage" if DEPLOYED_ENV else "django.contrib.staticfiles.storage.StaticFilesStorage",
     },
 }
 
@@ -207,6 +209,6 @@ CSRF_TRUSTED_ORIGINS = env_list(
 )
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
-SECURE_SSL_REDIRECT = env_bool("SECURE_SSL_REDIRECT", RENDER and not DEBUG)
-SESSION_COOKIE_SECURE = env_bool("SESSION_COOKIE_SECURE", RENDER and not DEBUG)
-CSRF_COOKIE_SECURE = env_bool("CSRF_COOKIE_SECURE", RENDER and not DEBUG)
+SECURE_SSL_REDIRECT = env_bool("SECURE_SSL_REDIRECT", DEPLOYED_ENV and not DEBUG)
+SESSION_COOKIE_SECURE = env_bool("SESSION_COOKIE_SECURE", DEPLOYED_ENV and not DEBUG)
+CSRF_COOKIE_SECURE = env_bool("CSRF_COOKIE_SECURE", DEPLOYED_ENV and not DEBUG)
