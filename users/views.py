@@ -11,7 +11,7 @@ from urllib.request import Request, urlopen
 from django.contrib.auth import get_user_model
 from django.core.files.storage import default_storage
 from django.core.management import call_command
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, transaction, connection
 from django.db.models import F, Max, Sum
 from django.db.models.functions import Coalesce
 from django.utils.crypto import get_random_string
@@ -46,6 +46,29 @@ from .serializers import (
 
 
 User = get_user_model()
+
+
+def _truncate_public_tables_except_migrations() -> None:
+    """
+    Full-overwrite helper for fixture imports.
+    Clears all public schema tables except django_migrations and resets identities.
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT tablename
+            FROM pg_tables
+            WHERE schemaname = 'public'
+              AND tablename <> 'django_migrations'
+            """
+        )
+        tables = [row[0] for row in cursor.fetchall()]
+
+        if not tables:
+            return
+
+        quoted_tables = ", ".join(f'"{table}"' for table in tables)
+        cursor.execute(f"TRUNCATE TABLE {quoted_tables} RESTART IDENTITY CASCADE;")
 
 
 def _normalize_credentials_path(raw_path: str) -> Path:
@@ -713,6 +736,8 @@ class AdminDatabaseImportView(APIView):
                 temp_path = tmp.name
 
             with transaction.atomic():
+                # Full-overwrite behavior: wipe existing data first, then restore fixture.
+                _truncate_public_tables_except_migrations()
                 call_command("loaddata", temp_path)
 
             return Response({"detail": "Database import completed successfully."}, status=status.HTTP_200_OK)
