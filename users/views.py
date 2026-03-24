@@ -2,17 +2,21 @@ import os
 import json
 import tempfile
 import re
+import hmac
+import hashlib
 from pathlib import Path
 from datetime import timedelta
 from io import StringIO
+from decimal import Decimal
 from urllib.parse import quote_plus, urlparse, parse_qs, urljoin, unquote
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 
 from django.contrib.auth import get_user_model
 from django.core.files.storage import default_storage
 from django.core.management import call_command
 from django.db import IntegrityError, transaction, connection
-from django.db.models import Count, F, Max, Sum
+from django.db.models import Count, F, Max, Q, Sum
 from django.db.models.functions import Coalesce
 from django.utils.crypto import get_random_string
 from django.utils.text import slugify
@@ -28,10 +32,28 @@ import firebase_admin
 from firebase_admin import auth as firebase_auth
 from firebase_admin import credentials
 
-from .models import UserAnalyticsDaily, UserAppearance, UserContactLead, UserLink, UserPortfolioItem
+from .models import (
+    CartItem,
+    Order,
+    OrderItem,
+    PaymentTransaction,
+    Product,
+    UserAnalyticsDaily,
+    UserAppearance,
+    UserContactLead,
+    UserLink,
+    UserPortfolioItem,
+)
 from .serializers import (
+    CartItemSerializer,
+    CartItemUpdateSerializer,
+    CartItemUpsertSerializer,
+    CheckoutInitializeSerializer,
     DashboardTrackSerializer,
     GoogleAuthSerializer,
+    OrderSerializer,
+    PaymentTransactionSerializer,
+    ProductSerializer,
     PublicTrackSerializer,
     PublicContactLeadSubmitSerializer,
     UserContactLeadSerializer,
@@ -46,6 +68,142 @@ from .serializers import (
 
 
 User = get_user_model()
+
+
+def _get_paystack_secret_key() -> str:
+    return (os.getenv("PAYSTACK_SECRET_KEY") or "").strip()
+
+
+def _paystack_initialize_transaction(*, email: str, amount_kobo: int, reference: str, callback_url: str):
+    secret_key = _get_paystack_secret_key()
+    if not secret_key:
+        raise ValueError("PAYSTACK_SECRET_KEY is not configured")
+
+    payload = {
+        "email": email,
+        "amount": amount_kobo,
+        "reference": reference,
+    }
+    if callback_url:
+        payload["callback_url"] = callback_url
+
+    request = Request(
+        "https://api.paystack.co/transaction/initialize",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {secret_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=15) as response:
+            return json.loads(response.read().decode("utf-8", errors="ignore"))
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="ignore") if hasattr(exc, "read") else ""
+        message = body
+        try:
+            parsed = json.loads(body or "{}")
+            message = parsed.get("message") or body
+        except Exception:
+            pass
+        raise ValueError(f"Paystack initialize failed ({exc.code}): {message or str(exc)}")
+    except URLError as exc:
+        raise ValueError(f"Could not connect to Paystack: {exc}")
+
+
+def _paystack_verify_transaction(reference: str):
+    secret_key = _get_paystack_secret_key()
+    if not secret_key:
+        raise ValueError("PAYSTACK_SECRET_KEY is not configured")
+
+    request = Request(
+        f"https://api.paystack.co/transaction/verify/{quote_plus(reference)}",
+        headers={
+            "Authorization": f"Bearer {secret_key}",
+            "Content-Type": "application/json",
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=15) as response:
+            return json.loads(response.read().decode("utf-8", errors="ignore"))
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="ignore") if hasattr(exc, "read") else ""
+        message = body
+        try:
+            parsed = json.loads(body or "{}")
+            message = parsed.get("message") or body
+        except Exception:
+            pass
+        raise ValueError(f"Paystack verify failed ({exc.code}): {message or str(exc)}")
+    except URLError as exc:
+        raise ValueError(f"Could not connect to Paystack: {exc}")
+
+
+def _apply_successful_payment(transaction: PaymentTransaction, raw_response: dict):
+    if transaction.status == PaymentTransaction.STATUS_SUCCESS:
+        return
+
+    now = timezone.now()
+    transaction.status = PaymentTransaction.STATUS_SUCCESS
+    transaction.paid_at = now
+    transaction.raw_response = raw_response
+    transaction.save(update_fields=["status", "paid_at", "raw_response", "updated_at"])
+
+    order = transaction.order
+    if order.status != Order.STATUS_PAID:
+        order.status = Order.STATUS_PAID
+        order.save(update_fields=["status", "updated_at"])
+
+    if order.user_id:
+        CartItem.objects.filter(user=order.user).delete()
+    elif order.session_key:
+        CartItem.objects.filter(user__isnull=True, session_key=order.session_key).delete()
+
+
+def _normalize_session_key(raw_value: str) -> str:
+    return (raw_value or "").strip()[:64]
+
+
+def _resolve_cart_scope(request, session_key: str = ""):
+    clean_session_key = _normalize_session_key(session_key)
+    if request.user and request.user.is_authenticated:
+        return {"user": request.user, "session_key": ""}
+    return {"user": None, "session_key": clean_session_key}
+
+
+def _cart_queryset_for_scope(scope: dict):
+    if scope.get("user"):
+        return CartItem.objects.filter(user=scope["user"]).select_related("product")
+    session_key = scope.get("session_key", "")
+    return CartItem.objects.filter(user__isnull=True, session_key=session_key).select_related("product")
+
+
+def _serialize_cart_response(queryset):
+    items = list(queryset.order_by("-updated_at", "-created_at"))
+    count = sum(item.quantity for item in items)
+    return {
+        "items": CartItemSerializer(items, many=True).data,
+        "count": count,
+    }
+
+
+def _merge_guest_cart_into_user(user, session_key: str):
+    normalized = _normalize_session_key(session_key)
+    if not normalized:
+        return
+
+    guest_items = CartItem.objects.filter(user__isnull=True, session_key=normalized).select_related("product")
+    for guest_item in guest_items:
+        existing = CartItem.objects.filter(user=user, product=guest_item.product).first()
+        if existing:
+            existing.quantity += guest_item.quantity
+            existing.save(update_fields=["quantity", "updated_at"])
+        else:
+            guest_item.user = user
+            guest_item.session_key = ""
+            guest_item.save(update_fields=["user", "session_key", "updated_at"])
 
 
 def _truncate_public_tables_except_migrations() -> None:
@@ -424,6 +582,11 @@ class GoogleAuthView(APIView):
                 user.save(update_fields=["first_name", "last_name"])
 
         refresh = RefreshToken.for_user(user)
+
+        merge_session_key = _normalize_session_key((request.data or {}).get("session_key", ""))
+        if merge_session_key:
+            _merge_guest_cart_into_user(user, merge_session_key)
+
         return Response(
             {
                 "user": UserSerializer(user).data,
@@ -1072,6 +1235,353 @@ class UserPortfolioItemDetailView(APIView):
 
         item.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ProductListView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        query = (request.query_params.get("q") or "").strip()
+        category = (request.query_params.get("category") or "").strip()
+
+        products = Product.objects.filter(is_active=True)
+        if category:
+            products = products.filter(category__iexact=category)
+        if query:
+            products = products.filter(Q(name__icontains=query) | Q(category__icontains=query))
+
+        return Response(ProductSerializer(products, many=True).data)
+
+
+class CartView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        session_key = request.query_params.get("session_key", "")
+        scope = _resolve_cart_scope(request, session_key)
+        queryset = _cart_queryset_for_scope(scope)
+        return Response(_serialize_cart_response(queryset))
+
+    def post(self, request):
+        serializer = CartItemUpsertSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        product = Product.objects.filter(id=serializer.validated_data["product_id"], is_active=True).first()
+        if not product:
+            return Response({"detail": "Product not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        quantity = serializer.validated_data.get("quantity", 1)
+        scope = _resolve_cart_scope(request, serializer.validated_data.get("session_key", ""))
+
+        if scope.get("user"):
+            item = CartItem.objects.filter(user=scope["user"], product=product).first()
+        else:
+            if not scope.get("session_key"):
+                return Response({"detail": "session_key is required for guest cart"}, status=status.HTTP_400_BAD_REQUEST)
+            item = CartItem.objects.filter(
+                user__isnull=True,
+                session_key=scope["session_key"],
+                product=product,
+            ).first()
+
+        if item:
+            item.quantity += quantity
+            item.save(update_fields=["quantity", "updated_at"])
+        else:
+            item = CartItem.objects.create(
+                user=scope.get("user"),
+                session_key=scope.get("session_key", ""),
+                product=product,
+                quantity=quantity,
+            )
+
+        queryset = _cart_queryset_for_scope(scope)
+        return Response(_serialize_cart_response(queryset), status=status.HTTP_201_CREATED)
+
+
+class CartItemDetailView(APIView):
+    permission_classes = [AllowAny]
+
+    def _get_item(self, request, item_id, session_key=""):
+        scope = _resolve_cart_scope(request, session_key)
+        queryset = _cart_queryset_for_scope(scope)
+        item = queryset.filter(id=item_id).first()
+        return item, scope
+
+    def patch(self, request, item_id):
+        serializer = CartItemUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        item, scope = self._get_item(request, item_id, serializer.validated_data.get("session_key", ""))
+        if not item:
+            return Response({"detail": "Cart item not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        item.quantity = serializer.validated_data["quantity"]
+        item.save(update_fields=["quantity", "updated_at"])
+
+        queryset = _cart_queryset_for_scope(scope)
+        return Response(_serialize_cart_response(queryset))
+
+    def delete(self, request, item_id):
+        session_key = request.query_params.get("session_key", "")
+        item, scope = self._get_item(request, item_id, session_key)
+        if not item:
+            return Response({"detail": "Cart item not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        item.delete()
+        queryset = _cart_queryset_for_scope(scope)
+        return Response(_serialize_cart_response(queryset), status=status.HTTP_200_OK)
+
+
+class CartMergeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        session_key = _normalize_session_key((request.data or {}).get("session_key", ""))
+        if not session_key:
+            return Response({"detail": "session_key is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        _merge_guest_cart_into_user(request.user, session_key)
+        queryset = CartItem.objects.filter(user=request.user).select_related("product")
+        return Response(_serialize_cart_response(queryset), status=status.HTTP_200_OK)
+
+
+class CheckoutInitializeView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        if not _get_paystack_secret_key():
+            return Response(
+                {
+                    "detail": "Paystack is not configured on server.",
+                    "error": "Set PAYSTACK_SECRET_KEY in backend .env and restart the Django server.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = CheckoutInitializeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+
+        scope = _resolve_cart_scope(request, payload.get("session_key", ""))
+        if not scope.get("user") and not scope.get("session_key"):
+            return Response({"detail": "session_key is required for guest checkout"}, status=status.HTTP_400_BAD_REQUEST)
+
+        cart_items = list(_cart_queryset_for_scope(scope))
+        if not cart_items:
+            return Response({"detail": "Cart is empty"}, status=status.HTTP_400_BAD_REQUEST)
+
+        subtotal = Decimal("0.00")
+        for item in cart_items:
+            subtotal += Decimal(item.product.price) * Decimal(item.quantity)
+        subtotal = subtotal.quantize(Decimal("0.01"))
+        amount_kobo = int(subtotal * 100)
+
+        callback_url = payload.get("callback_url", "").strip() or os.getenv("PAYSTACK_CALLBACK_URL", "").strip()
+        reference = f"AHJU-{get_random_string(18).upper()}"
+
+        with transaction.atomic():
+            order = Order.objects.create(
+                user=scope.get("user"),
+                session_key=scope.get("session_key", ""),
+                email=payload["email"],
+                full_name=payload["full_name"],
+                phone_number=payload["phone_number"],
+                shipping_country=payload["shipping_country"],
+                shipping_address=payload["shipping_address"],
+                shipping_city=payload["shipping_city"],
+                shipping_postal_code=payload["shipping_postal_code"],
+                billing_same_as_shipping=payload.get("billing_same_as_shipping", True),
+                billing_country=payload.get("billing_country", ""),
+                billing_address=payload.get("billing_address", ""),
+                billing_city=payload.get("billing_city", ""),
+                billing_postal_code=payload.get("billing_postal_code", ""),
+                currency="NGN",
+                total_amount=subtotal,
+                status=Order.STATUS_PENDING,
+            )
+
+            if order.billing_same_as_shipping:
+                order.billing_country = order.shipping_country
+                order.billing_address = order.shipping_address
+                order.billing_city = order.shipping_city
+                order.billing_postal_code = order.shipping_postal_code
+                order.save(update_fields=[
+                    "billing_country",
+                    "billing_address",
+                    "billing_city",
+                    "billing_postal_code",
+                    "updated_at",
+                ])
+
+            order_items = []
+            for item in cart_items:
+                line_total = (Decimal(item.product.price) * Decimal(item.quantity)).quantize(Decimal("0.01"))
+                order_items.append(
+                    OrderItem(
+                        order=order,
+                        product=item.product,
+                        product_name=item.product.name,
+                        unit_price=item.product.price,
+                        quantity=item.quantity,
+                        line_total=line_total,
+                    )
+                )
+            OrderItem.objects.bulk_create(order_items)
+
+            payment_tx = PaymentTransaction.objects.create(
+                order=order,
+                gateway=PaymentTransaction.GATEWAY_PAYSTACK,
+                reference=reference,
+                amount=subtotal,
+                amount_kobo=amount_kobo,
+                status=PaymentTransaction.STATUS_PENDING,
+            )
+
+        try:
+            paystack_response = _paystack_initialize_transaction(
+                email=order.email,
+                amount_kobo=amount_kobo,
+                reference=reference,
+                callback_url=callback_url,
+            )
+        except Exception as exc:
+            error_text = str(exc)
+            payment_tx.status = PaymentTransaction.STATUS_FAILED
+            payment_tx.raw_response = {"error": error_text}
+            payment_tx.save(update_fields=["status", "raw_response", "updated_at"])
+            order.status = Order.STATUS_FAILED
+            order.save(update_fields=["status", "updated_at"])
+
+            # Upstream auth/config errors from Paystack should be a 400 (actionable),
+            # not a generic gateway outage.
+            if "Paystack initialize failed (401)" in error_text or "Paystack initialize failed (403)" in error_text:
+                return Response(
+                    {
+                        "detail": "Paystack rejected your API credentials or account configuration.",
+                        "error": error_text,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            return Response(
+                {"detail": "Could not initialize payment", "error": error_text},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        ok = bool(paystack_response.get("status"))
+        data = paystack_response.get("data") or {}
+        if not ok or not data.get("authorization_url"):
+            payment_tx.status = PaymentTransaction.STATUS_FAILED
+            payment_tx.raw_response = paystack_response
+            payment_tx.save(update_fields=["status", "raw_response", "updated_at"])
+            order.status = Order.STATUS_FAILED
+            order.save(update_fields=["status", "updated_at"])
+            return Response(
+                {
+                    "detail": paystack_response.get("message") or "Payment initialization failed",
+                    "paystack": paystack_response,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        payment_tx.raw_response = paystack_response
+        payment_tx.save(update_fields=["raw_response", "updated_at"])
+
+        return Response(
+            {
+                "authorization_url": data.get("authorization_url"),
+                "access_code": data.get("access_code"),
+                "reference": reference,
+                "order": OrderSerializer(order).data,
+                "payment": PaymentTransactionSerializer(payment_tx).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class CheckoutVerifyView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        reference = (request.query_params.get("reference") or "").strip()
+        if not reference:
+            return Response({"detail": "reference is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        payment_tx = PaymentTransaction.objects.filter(reference=reference).select_related("order").first()
+        if not payment_tx:
+            return Response({"detail": "Payment reference not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            paystack_response = _paystack_verify_transaction(reference)
+        except Exception as exc:
+            return Response({"detail": "Could not verify payment", "error": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        data = paystack_response.get("data") or {}
+        paid_amount = int(data.get("amount") or 0)
+        paid_currency = (data.get("currency") or "").upper()
+        paid_status = (data.get("status") or "").lower()
+
+        success = (
+            bool(paystack_response.get("status"))
+            and paid_status == "success"
+            and paid_currency in {"", "NGN"}
+            and paid_amount == payment_tx.amount_kobo
+        )
+
+        if success:
+            _apply_successful_payment(payment_tx, paystack_response)
+        else:
+            payment_tx.status = PaymentTransaction.STATUS_FAILED
+            payment_tx.raw_response = paystack_response
+            payment_tx.save(update_fields=["status", "raw_response", "updated_at"])
+            if payment_tx.order.status != Order.STATUS_PAID:
+                payment_tx.order.status = Order.STATUS_FAILED
+                payment_tx.order.save(update_fields=["status", "updated_at"])
+
+        return Response(
+            {
+                "verified": success,
+                "reference": reference,
+                "order": OrderSerializer(payment_tx.order).data,
+                "payment": PaymentTransactionSerializer(payment_tx).data,
+                "paystack": paystack_response,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class PaystackWebhookView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        secret = _get_paystack_secret_key()
+        if not secret:
+            return Response({"detail": "PAYSTACK_SECRET_KEY not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        signature = (request.headers.get("x-paystack-signature") or "").strip()
+        computed = hmac.new(secret.encode("utf-8"), request.body, hashlib.sha512).hexdigest()
+        if not signature or not hmac.compare_digest(signature, computed):
+            return Response({"detail": "Invalid signature"}, status=status.HTTP_400_BAD_REQUEST)
+
+        event = request.data.get("event")
+        data = request.data.get("data") or {}
+
+        if event == "charge.success":
+            reference = (data.get("reference") or "").strip()
+            payment_tx = PaymentTransaction.objects.filter(reference=reference).select_related("order").first()
+            if payment_tx:
+                paid_amount = int(data.get("amount") or 0)
+                paid_status = (data.get("status") or "").lower()
+                paid_currency = (data.get("currency") or "").upper()
+                if (
+                    paid_status == "success"
+                    and paid_amount == payment_tx.amount_kobo
+                    and paid_currency in {"", "NGN"}
+                ):
+                    _apply_successful_payment(payment_tx, request.data)
+
+        return Response({"received": True}, status=status.HTTP_200_OK)
 
 
 class PublicProfileView(APIView):

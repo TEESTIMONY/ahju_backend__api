@@ -5,7 +5,17 @@ from rest_framework import serializers
 from django.conf import settings
 from django.core.files.storage import default_storage
 
-from .models import UserAppearance, UserContactLead, UserLink, UserPortfolioItem
+from .models import (
+    CartItem,
+    Order,
+    OrderItem,
+    PaymentTransaction,
+    Product,
+    UserAppearance,
+    UserContactLead,
+    UserLink,
+    UserPortfolioItem,
+)
 
 
 User = get_user_model()
@@ -184,3 +194,120 @@ class UserPortfolioImportSerializer(serializers.Serializer):
         allow_empty=True,
         default=list,
     )
+
+
+class ProductSerializer(serializers.ModelSerializer):
+    gallery_images = serializers.ListField(
+        child=serializers.CharField(),
+        required=False,
+        allow_empty=True,
+    )
+
+    class Meta:
+        model = Product
+        fields = [
+            "id",
+            "name",
+            "slug",
+            "category",
+            "description",
+            "price",
+            "old_price",
+            "image_url",
+            "gallery_images",
+            "is_active",
+            "stock_quantity",
+        ]
+
+
+class CartItemSerializer(serializers.ModelSerializer):
+    product = ProductSerializer(read_only=True)
+
+    class Meta:
+        model = CartItem
+        fields = ["id", "product", "quantity", "updated_at"]
+
+
+class CartItemUpsertSerializer(serializers.Serializer):
+    product_id = serializers.IntegerField(min_value=1)
+    quantity = serializers.IntegerField(min_value=1, required=False, default=1)
+    session_key = serializers.CharField(max_length=64, required=False, allow_blank=True, default="")
+
+
+class CartItemUpdateSerializer(serializers.Serializer):
+    quantity = serializers.IntegerField(min_value=1)
+    session_key = serializers.CharField(max_length=64, required=False, allow_blank=True, default="")
+
+
+class CheckoutInitializeSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    full_name = serializers.CharField(max_length=180)
+    phone_number = serializers.CharField(max_length=32)
+
+    shipping_country = serializers.CharField(max_length=120)
+    shipping_address = serializers.CharField(max_length=240)
+    shipping_city = serializers.CharField(max_length=120)
+    shipping_postal_code = serializers.CharField(max_length=40)
+
+    billing_same_as_shipping = serializers.BooleanField(default=True)
+    billing_country = serializers.CharField(max_length=120, required=False, allow_blank=True, default="")
+    billing_address = serializers.CharField(max_length=240, required=False, allow_blank=True, default="")
+    billing_city = serializers.CharField(max_length=120, required=False, allow_blank=True, default="")
+    billing_postal_code = serializers.CharField(max_length=40, required=False, allow_blank=True, default="")
+
+    session_key = serializers.CharField(max_length=64, required=False, allow_blank=True, default="")
+    callback_url = serializers.URLField(required=False, allow_blank=True, default="")
+
+    def validate(self, attrs):
+        if not attrs.get("billing_same_as_shipping", True):
+            required_fields = [
+                "billing_country",
+                "billing_address",
+                "billing_city",
+                "billing_postal_code",
+            ]
+            missing = [field for field in required_fields if not (attrs.get(field) or "").strip()]
+            if missing:
+                raise serializers.ValidationError(
+                    {field: "This field is required when billing address differs." for field in missing}
+                )
+        return attrs
+
+
+class OrderItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OrderItem
+        fields = ["id", "product_name", "unit_price", "quantity", "line_total"]
+
+
+class OrderSerializer(serializers.ModelSerializer):
+    items = OrderItemSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Order
+        fields = [
+            "id",
+            "email",
+            "full_name",
+            "phone_number",
+            "shipping_country",
+            "shipping_address",
+            "shipping_city",
+            "shipping_postal_code",
+            "billing_same_as_shipping",
+            "billing_country",
+            "billing_address",
+            "billing_city",
+            "billing_postal_code",
+            "currency",
+            "total_amount",
+            "status",
+            "items",
+            "created_at",
+        ]
+
+
+class PaymentTransactionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PaymentTransaction
+        fields = ["id", "reference", "gateway", "amount", "amount_kobo", "status", "paid_at", "created_at"]

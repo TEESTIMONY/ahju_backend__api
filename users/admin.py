@@ -1,6 +1,55 @@
 from django.contrib import admin
 
-from .models import UserAnalyticsDaily, UserAppearance, UserContactLead, UserLink, UserPortfolioItem
+from .models import CartItem, Product, UserAnalyticsDaily, UserAppearance, UserContactLead, UserLink, UserPortfolioItem
+
+
+@admin.register(Product)
+class ProductAdmin(admin.ModelAdmin):
+    list_display = ("name", "category", "price", "old_price", "stock_quantity", "is_active")
+    list_filter = ("category", "is_active")
+    search_fields = ("name", "slug", "category")
+    ordering = ("name",)
+    fieldsets = (
+        (
+            "Basic",
+            {
+                "fields": (
+                    "name",
+                    "slug",
+                    "category",
+                    "description",
+                )
+            },
+        ),
+        (
+            "Pricing & Stock",
+            {
+                "fields": (
+                    "price",
+                    "old_price",
+                    "stock_quantity",
+                    "is_active",
+                )
+            },
+        ),
+        (
+            "Media",
+            {
+                "fields": (
+                    "image_url",
+                    "gallery_images",
+                )
+            },
+        ),
+    )
+
+
+@admin.register(CartItem)
+class CartItemAdmin(admin.ModelAdmin):
+    list_display = ("id", "user", "session_key", "product", "quantity", "updated_at")
+    search_fields = ("user__username", "session_key", "product__name")
+    list_filter = ("updated_at",)
+    ordering = ("-updated_at",)
 
 
 @admin.register(UserAnalyticsDaily)
