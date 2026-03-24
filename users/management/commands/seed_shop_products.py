@@ -1,5 +1,7 @@
 from pathlib import Path
+import os
 import shutil
+from urllib.parse import quote
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
@@ -125,6 +127,13 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         source_dir = (options.get("source_dir") or "").strip()
+        fallback_base_url = (
+            os.getenv("PRODUCT_IMAGE_FALLBACK_BASE_URL", "").strip()
+            or "https://raw.githubusercontent.com/TEESTIMONY/ahju/main"
+        ).rstrip("/")
+
+        def build_fallback_url(filename: str) -> str:
+            return f"{fallback_base_url}/{quote(filename)}"
 
         if source_dir:
             source_root = Path(source_dir).resolve()
@@ -145,14 +154,24 @@ class Command(BaseCommand):
 
         for item in PRODUCT_SEED_DATA:
             slug = slugify(item["name"])
+            existing_product = Product.objects.filter(slug=slug).first()
             source_image_path = source_root / item["image_filename"]
             target_image_path = product_media_dir / item["image_filename"]
 
             if source_image_path.exists():
-                shutil.copy2(source_image_path, target_image_path)
+                # Avoid SameFileError when source and target point to the same file.
+                if source_image_path.resolve() != target_image_path.resolve():
+                    shutil.copy2(source_image_path, target_image_path)
                 image_url = f"{settings.MEDIA_URL.rstrip('/')}/products/{item['image_filename']}"
+            elif target_image_path.exists():
+                # Keep using already-present media file (e.g. persistent disk in production).
+                image_url = f"{settings.MEDIA_URL.rstrip('/')}/products/{item['image_filename']}"
+            elif existing_product and (existing_product.image_url or "").strip():
+                # Do not wipe existing product image URL when source files are not available.
+                image_url = existing_product.image_url
             else:
-                image_url = ""
+                # Last fallback: point to repository-hosted image URL so first deploy still shows media.
+                image_url = build_fallback_url(item["image_filename"])
                 missing_images.append(item["image_filename"])
 
             gallery_images = []
@@ -160,12 +179,23 @@ class Command(BaseCommand):
                 source_gallery_path = source_root / gallery_filename
                 target_gallery_path = product_media_dir / gallery_filename
                 if source_gallery_path.exists():
-                    shutil.copy2(source_gallery_path, target_gallery_path)
+                    # Avoid SameFileError when source and target are identical.
+                    if source_gallery_path.resolve() != target_gallery_path.resolve():
+                        shutil.copy2(source_gallery_path, target_gallery_path)
+                    gallery_images.append(
+                        f"{settings.MEDIA_URL.rstrip('/')}/products/{gallery_filename}"
+                    )
+                elif target_gallery_path.exists():
                     gallery_images.append(
                         f"{settings.MEDIA_URL.rstrip('/')}/products/{gallery_filename}"
                     )
                 else:
+                    gallery_images.append(build_fallback_url(gallery_filename))
                     missing_images.append(gallery_filename)
+
+            if not gallery_images and existing_product and existing_product.gallery_images:
+                # Preserve existing gallery when no source/target files were found.
+                gallery_images = existing_product.gallery_images
 
             defaults = {
                 "name": item["name"],
