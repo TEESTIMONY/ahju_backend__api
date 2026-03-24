@@ -954,23 +954,25 @@ class UserAppearanceView(APIView):
         if not content_type.startswith("image/"):
             return Response({"detail": "Only image files are allowed"}, status=status.HTTP_400_BAD_REQUEST)
 
-        original_name = Path(file.name).name
-        relative_path = f"appearance/{request.user.id}/{original_name}"
-        saved_path = default_storage.save(relative_path, file)
-        # Store relative media path so it works across devices/environments.
-        # Serializer will return an absolute URL for the current request host.
-        stored_path = saved_path
-
         appearance, _ = UserAppearance.objects.get_or_create(user=request.user)
         if target == "profile":
-            appearance.profile_image_url = stored_path
-            appearance.save(update_fields=["profile_image_url"])
+            appearance.profile_image.save(Path(file.name).name, file, save=False)
+            # Keep legacy URL field in sync for backward compatibility.
+            appearance.profile_image_url = appearance.profile_image.name
+            appearance.save(update_fields=["profile_image", "profile_image_url"])
         else:
-            appearance.hero_image_url = stored_path
-            appearance.save(update_fields=["hero_image_url"])
+            appearance.hero_image.save(Path(file.name).name, file, save=False)
+            # Keep legacy URL field in sync for backward compatibility.
+            appearance.hero_image_url = appearance.hero_image.name
+            appearance.save(update_fields=["hero_image", "hero_image_url"])
 
-        saved_url = default_storage.url(saved_path)
-        if not (saved_url.startswith("http://") or saved_url.startswith("https://")):
+        saved_url = ""
+        if target == "profile" and appearance.profile_image:
+            saved_url = default_storage.url(appearance.profile_image.name)
+        elif target == "hero" and appearance.hero_image:
+            saved_url = default_storage.url(appearance.hero_image.name)
+
+        if saved_url and not (saved_url.startswith("http://") or saved_url.startswith("https://")):
             saved_url = request.build_absolute_uri(saved_url)
         return Response({"url": saved_url}, status=status.HTTP_201_CREATED)
 

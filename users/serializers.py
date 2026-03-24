@@ -107,10 +107,16 @@ class UserAppearanceSerializer(serializers.ModelSerializer):
     hero_image_url = serializers.SerializerMethodField()
 
     def get_profile_image_url(self, obj):
-        return _absolute_media_url(self.context.get("request"), obj.profile_image_url)
+        request = self.context.get("request")
+        if getattr(obj, "profile_image", None) and obj.profile_image.name:
+            return _absolute_media_url(request, obj.profile_image.name)
+        return _absolute_media_url(request, obj.profile_image_url)
 
     def get_hero_image_url(self, obj):
-        return _absolute_media_url(self.context.get("request"), obj.hero_image_url)
+        request = self.context.get("request")
+        if getattr(obj, "hero_image", None) and obj.hero_image.name:
+            return _absolute_media_url(request, obj.hero_image.name)
+        return _absolute_media_url(request, obj.hero_image_url)
 
     class Meta:
         model = UserAppearance

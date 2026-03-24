@@ -177,6 +177,8 @@ class UserAppearance(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="appearance")
     display_name = models.CharField(max_length=120, blank=True, default="")
     short_bio = models.CharField(max_length=280, blank=True, default="")
+    profile_image = models.ImageField(upload_to="appearance/profile/", blank=True, null=True)
+    hero_image = models.ImageField(upload_to="appearance/hero/", blank=True, null=True)
     profile_image_url = models.URLField(blank=True, default="")
     hero_image_url = models.URLField(blank=True, default="")
     selected_theme = models.CharField(max_length=64, blank=True, default="minimal-light")
