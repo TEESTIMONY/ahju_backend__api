@@ -9,6 +9,9 @@ class Product(models.Model):
     description = models.TextField(blank=True, default="")
     price = models.DecimalField(max_digits=12, decimal_places=2)
     old_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    # Primary product image upload (recommended).
+    image = models.ImageField(upload_to="products/", blank=True, null=True)
+    # Optional legacy/fallback URL (kept for backward compatibility).
     image_url = models.URLField(max_length=1000, blank=True, default="")
     gallery_images = models.JSONField(default=list, blank=True)
     is_active = models.BooleanField(default=True)

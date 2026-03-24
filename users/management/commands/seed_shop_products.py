@@ -157,15 +157,22 @@ class Command(BaseCommand):
             existing_product = Product.objects.filter(slug=slug).first()
             source_image_path = source_root / item["image_filename"]
             target_image_path = product_media_dir / item["image_filename"]
+            image_file_value = None
 
             if source_image_path.exists():
                 # Avoid SameFileError when source and target point to the same file.
                 if source_image_path.resolve() != target_image_path.resolve():
                     shutil.copy2(source_image_path, target_image_path)
+                image_file_value = f"products/{item['image_filename']}"
                 image_url = f"{settings.MEDIA_URL.rstrip('/')}/products/{item['image_filename']}"
             elif target_image_path.exists():
                 # Keep using already-present media file (e.g. persistent disk in production).
+                image_file_value = f"products/{item['image_filename']}"
                 image_url = f"{settings.MEDIA_URL.rstrip('/')}/products/{item['image_filename']}"
+            elif existing_product and getattr(existing_product, "image", None):
+                # Preserve existing uploaded image in DB.
+                image_file_value = existing_product.image.name
+                image_url = existing_product.image_url
             elif existing_product and (existing_product.image_url or "").strip():
                 # Do not wipe existing product image URL when source files are not available.
                 image_url = existing_product.image_url
@@ -203,6 +210,7 @@ class Command(BaseCommand):
                 "description": item.get("description", ""),
                 "price": item["price"],
                 "old_price": item["old_price"],
+                "image": image_file_value,
                 "image_url": image_url,
                 "gallery_images": gallery_images,
                 "is_active": True,

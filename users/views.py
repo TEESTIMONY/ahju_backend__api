@@ -1250,7 +1250,7 @@ class ProductListView(APIView):
         if query:
             products = products.filter(Q(name__icontains=query) | Q(category__icontains=query))
 
-        return Response(ProductSerializer(products, many=True).data)
+        return Response(ProductSerializer(products, many=True, context={"request": request}).data)
 
 
 class CartView(APIView):

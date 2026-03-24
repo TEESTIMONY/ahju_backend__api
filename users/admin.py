@@ -36,6 +36,7 @@ class ProductAdmin(admin.ModelAdmin):
             "Media",
             {
                 "fields": (
+                    "image",
                     "image_url",
                     "gallery_images",
                 )

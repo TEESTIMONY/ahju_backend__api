@@ -197,11 +197,35 @@ class UserPortfolioImportSerializer(serializers.Serializer):
 
 
 class ProductSerializer(serializers.ModelSerializer):
+    image_url = serializers.SerializerMethodField()
     gallery_images = serializers.ListField(
         child=serializers.CharField(),
         required=False,
         allow_empty=True,
     )
+
+    def get_image_url(self, obj):
+        request = self.context.get("request")
+
+        if getattr(obj, "image", None):
+            try:
+                image_path = obj.image.name or ""
+                if image_path:
+                    return _absolute_media_url(request, image_path)
+            except Exception:
+                pass
+
+        return _absolute_media_url(request, obj.image_url)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        data["gallery_images"] = [
+            _absolute_media_url(request, value)
+            for value in (instance.gallery_images or [])
+            if (value or "").strip()
+        ]
+        return data
 
     class Meta:
         model = Product
