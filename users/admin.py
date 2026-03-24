@@ -1,6 +1,21 @@
 from django.contrib import admin
 
-from .models import CartItem, Product, UserAnalyticsDaily, UserAppearance, UserContactLead, UserLink, UserPortfolioItem
+from .models import (
+    CartItem,
+    Product,
+    ProductGalleryImage,
+    UserAnalyticsDaily,
+    UserAppearance,
+    UserContactLead,
+    UserLink,
+    UserPortfolioItem,
+)
+
+
+class ProductGalleryImageInline(admin.TabularInline):
+    model = ProductGalleryImage
+    extra = 2
+    fields = ("image", "sort_order")
 
 
 @admin.register(Product)
@@ -9,6 +24,7 @@ class ProductAdmin(admin.ModelAdmin):
     list_filter = ("category", "is_active")
     search_fields = ("name", "slug", "category")
     ordering = ("name",)
+    inlines = [ProductGalleryImageInline]
     fieldsets = (
         (
             "Basic",

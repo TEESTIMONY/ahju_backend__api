@@ -11,6 +11,7 @@ from .models import (
     OrderItem,
     PaymentTransaction,
     Product,
+    ProductGalleryImage,
     UserAppearance,
     UserContactLead,
     UserLink,
@@ -220,11 +221,32 @@ class ProductSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         data = super().to_representation(instance)
         request = self.context.get("request")
-        data["gallery_images"] = [
+        gallery_from_json = [
             _absolute_media_url(request, value)
             for value in (instance.gallery_images or [])
             if (value or "").strip()
         ]
+
+        gallery_from_uploads = [
+            _absolute_media_url(request, upload.image.name)
+            for upload in instance.gallery_uploads.all()
+            if getattr(upload, "image", None) and upload.image.name
+        ]
+
+        seen = set()
+        merged_gallery = []
+        for value in [*gallery_from_uploads, *gallery_from_json]:
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            merged_gallery.append(value)
+
+        # Ensure primary image is included as first slide in detail gallery.
+        primary_image = data.get("image_url") or ""
+        if primary_image:
+            merged_gallery = [primary_image] + [url for url in merged_gallery if url != primary_image]
+
+        data["gallery_images"] = merged_gallery
         return data
 
     class Meta:

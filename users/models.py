@@ -26,6 +26,19 @@ class Product(models.Model):
         return self.name
 
 
+class ProductGalleryImage(models.Model):
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="gallery_uploads")
+    image = models.ImageField(upload_to="products/gallery/")
+    sort_order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["sort_order", "id"]
+
+    def __str__(self):
+        return f"{self.product.name} gallery image #{self.id}"
+
+
 class CartItem(models.Model):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
