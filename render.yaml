@@ -9,10 +9,7 @@ services:
         sizeGB: 1
     buildCommand: pip install -r requirements.txt
     startCommand: >-
-      sh -c "mkdir -p /var/data/media &&
-      python manage.py migrate &&
-      python manage.py collectstatic --noinput &&
-      gunicorn config.wsgi:application --bind 0.0.0.0:$PORT"
+      sh ./scripts/deploy_start.sh
     autoDeploy: true
     healthCheckPath: /api/health/
     envVars:
@@ -22,5 +19,9 @@ services:
         value: "True"
       - key: DJANGO_MEDIA_ROOT
         value: "/var/data/media"
+      - key: SEED_PRODUCTS_ON_DEPLOY
+        value: "true"
+      - key: PRODUCT_IMAGE_SOURCE_DIR
+        value: "/opt/render/project/src/media/products"
       - key: DJANGO_ALLOWED_HOSTS
         value: "ahju-backend.onrender.com"

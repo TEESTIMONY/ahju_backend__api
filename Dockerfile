@@ -16,4 +16,6 @@ RUN python -m pip install --upgrade pip \
 
 COPY . /app
 
-CMD ["sh", "-c", "python manage.py migrate && python manage.py collectstatic --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:${PORT:-8000}"]
+RUN chmod +x /app/scripts/deploy_start.sh
+
+CMD ["sh", "-c", "PORT=${PORT:-8000} sh ./scripts/deploy_start.sh"]

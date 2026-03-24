@@ -59,7 +59,7 @@ pip install -r requirements.txt
 - Start command:
 
 ```bash
-python manage.py migrate && python manage.py collectstatic --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT
+sh ./scripts/deploy_start.sh
 ```
 
 You can also use the included `backend/render.yaml` Blueprint.
@@ -89,6 +89,28 @@ Firebase (choose one):
 - SSL/cookie security settings auto-enable in Render mode unless overridden.
 - On deploy, migrations and collectstatic run automatically from start command.
 
+### 3.1) Auto-seeding products on deploy
+
+This project now supports automatic product seeding during startup via `scripts/deploy_start.sh`.
+
+Environment variables:
+
+- `SEED_PRODUCTS_ON_DEPLOY` (default: `true`)
+  - `true` => runs `python manage.py seed_shop_products ...`
+  - `false` => skips seeding
+- `PRODUCT_IMAGE_SOURCE_DIR` (default: `/opt/render/project/src/media/products`)
+  - Folder where product image files are read from during seeding.
+
+Recommended Render values:
+
+```env
+SEED_PRODUCTS_ON_DEPLOY=true
+PRODUCT_IMAGE_SOURCE_DIR=/opt/render/project/src/media/products
+DJANGO_MEDIA_ROOT=/var/data/media
+```
+
+Because `seed_shop_products` uses `update_or_create` by slug, running it repeatedly is safe (it updates existing products).
+
 ## Deploying backend on Koyeb
 
 Create a **Web Service** on Koyeb from this repository and use:
@@ -103,7 +125,7 @@ pip install -r requirements.txt
 - Run command:
 
 ```bash
-python manage.py migrate && python manage.py collectstatic --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT
+PORT=${PORT:-8000} sh ./scripts/deploy_start.sh
 ```
 
 ### Required environment variables on Koyeb
@@ -129,3 +151,12 @@ Firebase:
 - This project now supports `KOYEB=True` for production security/static defaults.
 - WhiteNoise and secure-cookie/SSL settings are enabled automatically when `KOYEB=True` and `DJANGO_DEBUG=False`.
 - Ensure your Koyeb domain is included in `DJANGO_ALLOWED_HOSTS`.
+- Product auto-seeding on deploy is enabled by default (`SEED_PRODUCTS_ON_DEPLOY=true`).
+- Recommended Koyeb env vars for seeding:
+
+```env
+SEED_PRODUCTS_ON_DEPLOY=true
+PRODUCT_IMAGE_SOURCE_DIR=/app/media/products
+```
+
+- If your deployment does not include local image files, seeding still creates/updates products but image copy may warn.
