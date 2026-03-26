@@ -1,7 +1,10 @@
 from pathlib import Path
 import os
+import mimetypes
 import shutil
 from urllib.parse import quote
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
@@ -117,6 +120,50 @@ PRODUCT_SEED_DATA = [
 class Command(BaseCommand):
     help = "Seed shop products and copy product images into backend media."
 
+    @staticmethod
+    def _supabase_storage_enabled() -> bool:
+        return bool(
+            os.getenv("SUPABASE_URL", "").strip()
+            and os.getenv("SUPABASE_STORAGE_BUCKET", "").strip()
+            and os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+        )
+
+    @staticmethod
+    def _upload_file_to_supabase(local_path: Path, object_path: str) -> str:
+        supabase_url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+        bucket_name = os.getenv("SUPABASE_STORAGE_BUCKET", "").strip()
+        service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+
+        if not supabase_url or not bucket_name or not service_role_key:
+            raise ValueError("Missing Supabase storage configuration")
+
+        upload_url = f"{supabase_url}/storage/v1/object/{bucket_name}/{object_path}"
+        public_url = f"{supabase_url}/storage/v1/object/public/{bucket_name}/{object_path}"
+
+        content_type, _ = mimetypes.guess_type(str(local_path))
+        payload = local_path.read_bytes()
+
+        request = Request(
+            upload_url,
+            data=payload,
+            headers={
+                "apikey": service_role_key,
+                "Authorization": f"Bearer {service_role_key}",
+                "Content-Type": content_type or "application/octet-stream",
+                "x-upsert": "true",
+            },
+            method="POST",
+        )
+
+        try:
+            with urlopen(request, timeout=20):
+                pass
+        except HTTPError as exc:
+            response_body = exc.read().decode("utf-8", errors="ignore") if hasattr(exc, "read") else ""
+            raise ValueError(f"Supabase upload failed ({exc.code}): {response_body or exc.reason}")
+
+        return public_url
+
     def add_arguments(self, parser):
         parser.add_argument(
             "--source-dir",
@@ -147,10 +194,15 @@ class Command(BaseCommand):
         media_root = Path(settings.MEDIA_ROOT).resolve()
         product_media_dir = media_root / "products"
         product_media_dir.mkdir(parents=True, exist_ok=True)
+        use_supabase_storage = self._supabase_storage_enabled()
+
+        if use_supabase_storage:
+            self.stdout.write(self.style.NOTICE("Supabase storage detected. Product images will be uploaded to Supabase bucket."))
 
         created = 0
         updated = 0
         missing_images = []
+        supabase_upload_failures = []
 
         for item in PRODUCT_SEED_DATA:
             slug = slugify(item["name"])
@@ -158,25 +210,40 @@ class Command(BaseCommand):
             source_image_path = source_root / item["image_filename"]
             target_image_path = product_media_dir / item["image_filename"]
             image_file_value = None
+            image_url = ""
 
-            if source_image_path.exists():
+            available_local_image = source_image_path if source_image_path.exists() else None
+            if not available_local_image and target_image_path.exists():
+                available_local_image = target_image_path
+
+            if use_supabase_storage and available_local_image:
+                try:
+                    image_url = self._upload_file_to_supabase(
+                        available_local_image,
+                        f"products/{item['image_filename']}",
+                    )
+                    image_file_value = None
+                except Exception as exc:
+                    supabase_upload_failures.append(f"{item['image_filename']}: {exc}")
+
+            if not image_url and source_image_path.exists() and not use_supabase_storage:
                 # Avoid SameFileError when source and target point to the same file.
                 if source_image_path.resolve() != target_image_path.resolve():
                     shutil.copy2(source_image_path, target_image_path)
                 image_file_value = f"products/{item['image_filename']}"
                 image_url = f"{settings.MEDIA_URL.rstrip('/')}/products/{item['image_filename']}"
-            elif target_image_path.exists():
+            elif not image_url and target_image_path.exists() and not use_supabase_storage:
                 # Keep using already-present media file (e.g. persistent disk in production).
                 image_file_value = f"products/{item['image_filename']}"
                 image_url = f"{settings.MEDIA_URL.rstrip('/')}/products/{item['image_filename']}"
-            elif existing_product and getattr(existing_product, "image", None):
+            elif not image_url and existing_product and getattr(existing_product, "image", None) and not use_supabase_storage:
                 # Preserve existing uploaded image in DB.
                 image_file_value = existing_product.image.name
                 image_url = existing_product.image_url
-            elif existing_product and (existing_product.image_url or "").strip():
+            elif not image_url and existing_product and (existing_product.image_url or "").strip():
                 # Do not wipe existing product image URL when source files are not available.
                 image_url = existing_product.image_url
-            else:
+            elif not image_url:
                 # Last fallback: point to repository-hosted image URL so first deploy still shows media.
                 image_url = build_fallback_url(item["image_filename"])
                 missing_images.append(item["image_filename"])
@@ -185,14 +252,31 @@ class Command(BaseCommand):
             for gallery_filename in item.get("gallery_filenames", []):
                 source_gallery_path = source_root / gallery_filename
                 target_gallery_path = product_media_dir / gallery_filename
-                if source_gallery_path.exists():
+
+                available_local_gallery = source_gallery_path if source_gallery_path.exists() else None
+                if not available_local_gallery and target_gallery_path.exists():
+                    available_local_gallery = target_gallery_path
+
+                if use_supabase_storage and available_local_gallery:
+                    try:
+                        gallery_images.append(
+                            self._upload_file_to_supabase(
+                                available_local_gallery,
+                                f"products/gallery/{gallery_filename}",
+                            )
+                        )
+                        continue
+                    except Exception as exc:
+                        supabase_upload_failures.append(f"{gallery_filename}: {exc}")
+
+                if source_gallery_path.exists() and not use_supabase_storage:
                     # Avoid SameFileError when source and target are identical.
                     if source_gallery_path.resolve() != target_gallery_path.resolve():
                         shutil.copy2(source_gallery_path, target_gallery_path)
                     gallery_images.append(
                         f"{settings.MEDIA_URL.rstrip('/')}/products/{gallery_filename}"
                     )
-                elif target_gallery_path.exists():
+                elif target_gallery_path.exists() and not use_supabase_storage:
                     gallery_images.append(
                         f"{settings.MEDIA_URL.rstrip('/')}/products/{gallery_filename}"
                     )
@@ -236,5 +320,13 @@ class Command(BaseCommand):
                 self.style.WARNING(
                     "Missing source images (product created without image): "
                     + ", ".join(missing_images)
+                )
+            )
+
+        if supabase_upload_failures:
+            self.stdout.write(
+                self.style.WARNING(
+                    "Supabase upload issues (fallback URLs used where needed): "
+                    + " | ".join(supabase_upload_failures)
                 )
             )

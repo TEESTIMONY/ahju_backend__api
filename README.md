@@ -177,3 +177,13 @@ Notes:
 - `SUPABASE_SERVICE_ROLE_KEY` must stay on backend only (never frontend).
 - When Supabase env vars are present, upload endpoints use Supabase.
 - Existing DB image URLs are not migrated automatically; new uploads use Supabase.
+
+### Product images with Supabase (seeded catalog)
+
+When Supabase env vars are set, `python manage.py seed_shop_products` now uploads product primary and gallery images to Supabase and stores Supabase public URLs in product records.
+
+- Re-run seeding after enabling Supabase to switch seeded product image URLs to Supabase:
+
+```bash
+python manage.py seed_shop_products
+```
