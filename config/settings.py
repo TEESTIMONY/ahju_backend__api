@@ -37,6 +37,10 @@ ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost")
 RENDER = env_bool("RENDER", False)
 KOYEB = env_bool("KOYEB", False)
 DEPLOYED_ENV = RENDER or KOYEB
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
+SUPABASE_STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "").strip()
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+USE_SUPABASE_STORAGE = bool(SUPABASE_URL and SUPABASE_STORAGE_BUCKET and SUPABASE_SERVICE_ROLE_KEY)
 GOOGLE_CLOUD_STORAGE_BUCKET = os.getenv("GOOGLE_CLOUD_STORAGE_BUCKET") or os.getenv("FIREBASE_STORAGE_BUCKET")
 GOOGLE_CLOUD_PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT_ID")
 GOOGLE_CLOUD_STORAGE_CREDENTIALS_JSON = os.getenv("GOOGLE_CLOUD_STORAGE_CREDENTIALS_JSON") or os.getenv("FIREBASE_CREDENTIALS_JSON")
@@ -147,7 +151,12 @@ USE_GOOGLE_CLOUD_STORAGE = env_bool("USE_GOOGLE_CLOUD_STORAGE", False) and bool(
 )
 
 MEDIA_ROOT = Path(os.getenv("DJANGO_MEDIA_ROOT", BASE_DIR / "media"))
-MEDIA_URL = f"https://storage.googleapis.com/{GOOGLE_CLOUD_STORAGE_BUCKET}/" if USE_GOOGLE_CLOUD_STORAGE else "/media/"
+if USE_SUPABASE_STORAGE:
+    MEDIA_URL = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{SUPABASE_STORAGE_BUCKET}/"
+elif USE_GOOGLE_CLOUD_STORAGE:
+    MEDIA_URL = f"https://storage.googleapis.com/{GOOGLE_CLOUD_STORAGE_BUCKET}/"
+else:
+    MEDIA_URL = "/media/"
 
 STORAGES = {
     "staticfiles": {
@@ -167,6 +176,10 @@ if USE_GOOGLE_CLOUD_STORAGE:
         "PROJECT_ID": GS_PROJECT_ID,
         "CREDENTIALS": GS_CREDENTIALS,
         "DEFAULT_ACL": GS_DEFAULT_ACL,
+    }
+elif USE_SUPABASE_STORAGE:
+    STORAGES["default"] = {
+        "BACKEND": "config.storage_backends.SupabaseStorage",
     }
 else:
     STORAGES["default"] = {

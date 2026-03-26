@@ -175,7 +175,8 @@ If uploaded user images disappear after redeploy/restart, configure Supabase Sto
 Notes:
 
 - `SUPABASE_SERVICE_ROLE_KEY` must stay on backend only (never frontend).
-- When Supabase env vars are present, upload endpoints use Supabase.
+- When Supabase env vars are present, Django default media storage switches to Supabase.
+- This includes uploads from Django Admin (e.g. `Product.image`, gallery image uploads, appearance images, etc.).
 - Existing DB image URLs are not migrated automatically; new uploads use Supabase.
 
 ### Product images with Supabase (seeded catalog)
