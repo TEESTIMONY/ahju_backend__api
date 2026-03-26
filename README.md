@@ -160,3 +160,20 @@ PRODUCT_IMAGE_SOURCE_DIR=/app/media/products
 ```
 
 - If your deployment does not include local image files, seeding still creates/updates products but image copy may warn.
+
+## Supabase Storage setup (for persistent profile/portfolio uploads)
+
+If uploaded user images disappear after redeploy/restart, configure Supabase Storage.
+
+1. In Supabase dashboard, create a **public** bucket (example: `user-media`).
+2. In your backend environment variables, set:
+   - `SUPABASE_URL=https://your-project-ref.supabase.co`
+   - `SUPABASE_STORAGE_BUCKET=user-media`
+   - `SUPABASE_SERVICE_ROLE_KEY=...`
+3. Redeploy backend.
+
+Notes:
+
+- `SUPABASE_SERVICE_ROLE_KEY` must stay on backend only (never frontend).
+- When Supabase env vars are present, upload endpoints use Supabase.
+- Existing DB image URLs are not migrated automatically; new uploads use Supabase.

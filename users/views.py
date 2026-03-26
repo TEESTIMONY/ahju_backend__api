@@ -8,6 +8,7 @@ from pathlib import Path
 from datetime import timedelta
 from io import StringIO
 from decimal import Decimal
+from uuid import uuid4
 from urllib.parse import quote_plus, urlparse, parse_qs, urljoin, unquote
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
@@ -68,6 +69,55 @@ from .serializers import (
 
 
 User = get_user_model()
+
+
+def _supabase_storage_enabled() -> bool:
+    return bool(
+        os.getenv("SUPABASE_URL", "").strip()
+        and os.getenv("SUPABASE_STORAGE_BUCKET", "").strip()
+        and os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    )
+
+
+def _upload_image_to_supabase(*, file, folder: str, user_id: int) -> str:
+    supabase_url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+    bucket_name = os.getenv("SUPABASE_STORAGE_BUCKET", "").strip()
+    service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+
+    if not supabase_url or not bucket_name or not service_role_key:
+        raise ValueError("Missing Supabase storage configuration")
+
+    ext = os.path.splitext(file.name)[1] or ".jpg"
+    object_path = f"{folder}/{user_id}/{uuid4().hex}{ext}"
+    upload_url = f"{supabase_url}/storage/v1/object/{bucket_name}/{object_path}"
+    public_url = f"{supabase_url}/storage/v1/object/public/{bucket_name}/{object_path}"
+
+    if hasattr(file, "seek"):
+        file.seek(0)
+    payload = file.read()
+
+    request = Request(
+        upload_url,
+        data=payload,
+        headers={
+            "apikey": service_role_key,
+            "Authorization": f"Bearer {service_role_key}",
+            "Content-Type": file.content_type or "application/octet-stream",
+            "x-upsert": "true",
+        },
+        method="POST",
+    )
+
+    try:
+        with urlopen(request, timeout=15):
+            pass
+    except HTTPError as exc:
+        response_body = exc.read().decode("utf-8", errors="ignore") if hasattr(exc, "read") else ""
+        raise ValueError(f"Supabase upload failed ({exc.code}): {response_body or exc.reason}")
+    except Exception as exc:
+        raise ValueError(f"Supabase upload failed: {exc}")
+
+    return public_url
 
 
 def _get_paystack_secret_key() -> str:
@@ -955,22 +1005,39 @@ class UserAppearanceView(APIView):
             return Response({"detail": "Only image files are allowed"}, status=status.HTTP_400_BAD_REQUEST)
 
         appearance, _ = UserAppearance.objects.get_or_create(user=request.user)
-        if target == "profile":
-            appearance.profile_image.save(Path(file.name).name, file, save=False)
-            # Keep legacy URL field in sync for backward compatibility.
-            appearance.profile_image_url = appearance.profile_image.name
-            appearance.save(update_fields=["profile_image", "profile_image_url"])
-        else:
-            appearance.hero_image.save(Path(file.name).name, file, save=False)
-            # Keep legacy URL field in sync for backward compatibility.
-            appearance.hero_image_url = appearance.hero_image.name
-            appearance.save(update_fields=["hero_image", "hero_image_url"])
 
-        saved_url = ""
-        if target == "profile" and appearance.profile_image:
-            saved_url = default_storage.url(appearance.profile_image.name)
-        elif target == "hero" and appearance.hero_image:
-            saved_url = default_storage.url(appearance.hero_image.name)
+        if _supabase_storage_enabled():
+            folder = "appearance/profile" if target == "profile" else "appearance/hero"
+            try:
+                saved_url = _upload_image_to_supabase(file=file, folder=folder, user_id=request.user.id)
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+            if target == "profile":
+                appearance.profile_image = None
+                appearance.profile_image_url = saved_url
+                appearance.save(update_fields=["profile_image", "profile_image_url"])
+            else:
+                appearance.hero_image = None
+                appearance.hero_image_url = saved_url
+                appearance.save(update_fields=["hero_image", "hero_image_url"])
+        else:
+            if target == "profile":
+                appearance.profile_image.save(Path(file.name).name, file, save=False)
+                # Keep legacy URL field in sync for backward compatibility.
+                appearance.profile_image_url = appearance.profile_image.name
+                appearance.save(update_fields=["profile_image", "profile_image_url"])
+            else:
+                appearance.hero_image.save(Path(file.name).name, file, save=False)
+                # Keep legacy URL field in sync for backward compatibility.
+                appearance.hero_image_url = appearance.hero_image.name
+                appearance.save(update_fields=["hero_image", "hero_image_url"])
+
+            saved_url = ""
+            if target == "profile" and appearance.profile_image:
+                saved_url = default_storage.url(appearance.profile_image.name)
+            elif target == "hero" and appearance.hero_image:
+                saved_url = default_storage.url(appearance.hero_image.name)
 
         if saved_url and not (saved_url.startswith("http://") or saved_url.startswith("https://")):
             saved_url = request.build_absolute_uri(saved_url)
@@ -989,10 +1056,16 @@ class UserAppearanceImageUploadView(APIView):
         if not content_type.startswith("image/"):
             return Response({"detail": "Only image files are allowed"}, status=status.HTTP_400_BAD_REQUEST)
 
-        original_name = Path(file.name).name
-        relative_path = f"appearance/{request.user.id}/{original_name}"
-        saved_path = default_storage.save(relative_path, file)
-        saved_url = default_storage.url(saved_path)
+        if _supabase_storage_enabled():
+            try:
+                saved_url = _upload_image_to_supabase(file=file, folder="appearance", user_id=request.user.id)
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        else:
+            original_name = Path(file.name).name
+            relative_path = f"appearance/{request.user.id}/{original_name}"
+            saved_path = default_storage.save(relative_path, file)
+            saved_url = default_storage.url(saved_path)
         if not (saved_url.startswith("http://") or saved_url.startswith("https://")):
             saved_url = request.build_absolute_uri(saved_url)
         return Response({"url": saved_url}, status=status.HTTP_201_CREATED)
@@ -1094,12 +1167,18 @@ class UserPortfolioUploadView(APIView):
         if not content_type.startswith("image/"):
             return Response({"detail": "Only image files are allowed"}, status=status.HTTP_400_BAD_REQUEST)
 
-        original_name = Path(file.name).name
-        relative_path = f"portfolio/{request.user.id}/{original_name}"
-        saved_path = default_storage.save(relative_path, file)
-        # Store relative media path so it works across devices/environments.
-        # Serializer will return an absolute URL for the current request host.
-        stored_path = saved_path
+        if _supabase_storage_enabled():
+            try:
+                stored_path = _upload_image_to_supabase(file=file, folder="portfolio", user_id=request.user.id)
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        else:
+            original_name = Path(file.name).name
+            relative_path = f"portfolio/{request.user.id}/{original_name}"
+            saved_path = default_storage.save(relative_path, file)
+            # Store relative media path so it works across devices/environments.
+            # Serializer will return an absolute URL for the current request host.
+            stored_path = saved_path
 
         next_sort_order = UserPortfolioItem.objects.filter(user=request.user).aggregate(
             max_order=Coalesce(Max("sort_order"), 0)
