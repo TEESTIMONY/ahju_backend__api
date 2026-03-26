@@ -46,8 +46,15 @@ def _absolute_media_url(request, value: str) -> str:
             pass
         return raw
 
+    # Normalize legacy local media paths when storage backend is remote (e.g. Supabase).
+    storage_key = raw
+    if storage_key.startswith("/media/"):
+        storage_key = storage_key[len("/media/"):]
+    elif storage_key == "/media":
+        storage_key = ""
+
     try:
-        storage_url = default_storage.url(raw)
+        storage_url = default_storage.url(storage_key)
     except Exception:
         storage_url = raw
 

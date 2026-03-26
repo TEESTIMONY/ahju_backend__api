@@ -27,6 +27,14 @@ class SupabaseStorage(Storage):
 
     def _normalize_name(self, name: str) -> str:
         normalized = (name or "").replace("\\", "/").lstrip("/")
+
+        # Legacy DB values may be stored as /media/... from local filesystem mode.
+        # Avoid creating URLs like .../bucket/media/... unless explicitly desired via base_path.
+        if normalized == "media":
+            normalized = ""
+        elif normalized.startswith("media/"):
+            normalized = normalized[len("media/"):]
+
         if self.base_path:
             return f"{self.base_path}/{normalized}" if normalized else self.base_path
         return normalized
