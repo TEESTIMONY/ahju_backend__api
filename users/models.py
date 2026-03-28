@@ -132,7 +132,7 @@ class OrderItem(models.Model):
 
 
 class PaymentTransaction(models.Model):
-    GATEWAY_PAYSTACK = "paystack"
+    GATEWAY_DEFAULT = "manual"
 
     STATUS_PENDING = "pending"
     STATUS_SUCCESS = "success"
@@ -144,7 +144,7 @@ class PaymentTransaction(models.Model):
     )
 
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="payments")
-    gateway = models.CharField(max_length=24, default=GATEWAY_PAYSTACK)
+    gateway = models.CharField(max_length=24, default=GATEWAY_DEFAULT)
     reference = models.CharField(max_length=120, unique=True, db_index=True)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     amount_kobo = models.PositiveIntegerField(default=0)

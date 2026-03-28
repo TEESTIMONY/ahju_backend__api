@@ -20,6 +20,7 @@ urlpatterns = [
     path("api/health/", health_check, name="health-check"),
     path("api/auth/token/refresh/", TokenRefreshView.as_view(), name="token-refresh"),
     path("api/", include("users.urls")),
+    path("api/payments/", include("payments.urls")),
 ]
 
 if settings.DEBUG:

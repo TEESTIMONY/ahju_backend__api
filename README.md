@@ -188,3 +188,5 @@ When Supabase env vars are set, `python manage.py seed_shop_products` now upload
 ```bash
 python manage.py seed_shop_products
 ```
+
+
