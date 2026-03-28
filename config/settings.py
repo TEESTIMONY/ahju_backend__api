@@ -2,6 +2,7 @@ from pathlib import Path
 import os
 import json
 import hashlib
+import smtplib
 from dotenv import load_dotenv
 
 try:
@@ -231,3 +232,32 @@ CSRF_COOKIE_SECURE = env_bool("CSRF_COOKIE_SECURE", DEPLOYED_ENV and not DEBUG)
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY", "").strip()
 PAYSTACK_BASE_URL = os.getenv("PAYSTACK_BASE_URL", "https://api.paystack.co").strip().rstrip("/")
 PAYSTACK_CALLBACK_URL = os.getenv("PAYSTACK_CALLBACK_URL", "").strip()
+
+# Optional merchant notification settings (email on paid orders)
+PAYMENT_ORDER_NOTIFY_EMAIL = os.getenv("PAYMENT_ORDER_NOTIFY_EMAIL", "").strip()
+PAYMENT_ORDER_NOTIFY_EMAILS = env_list("PAYMENT_ORDER_NOTIFY_EMAILS", PAYMENT_ORDER_NOTIFY_EMAIL)
+
+# Minimal SMTP env support (optional)
+EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.smtp.EmailBackend")
+EMAIL_HOST = os.getenv("EMAIL_HOST", "").strip()
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587") or "587")
+EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", True)
+EMAIL_USE_SSL = env_bool("EMAIL_USE_SSL", False)
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "").strip()
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "").strip()
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER or "no-reply@myahju.com")
+SERVER_EMAIL = os.getenv("SERVER_EMAIL", DEFAULT_FROM_EMAIL)
+
+if EMAIL_HOST and EMAIL_PORT and EMAIL_HOST_USER and not EMAIL_HOST_PASSWORD:
+    raise RuntimeError("EMAIL_HOST_PASSWORD is required when EMAIL_HOST_USER is set")
+
+if EMAIL_USE_TLS and EMAIL_USE_SSL:
+    raise RuntimeError("EMAIL_USE_TLS and EMAIL_USE_SSL cannot both be True")
+
+try:
+    if EMAIL_HOST and EMAIL_PORT:
+        if EMAIL_USE_SSL:
+            with smtplib.SMTP_SSL(EMAIL_HOST, EMAIL_PORT, timeout=2):
+                pass
+except Exception:
+    pass

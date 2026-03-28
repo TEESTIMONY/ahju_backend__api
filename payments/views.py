@@ -158,7 +158,38 @@ class PaymentInitializeView(APIView):
                 amount_minor=amount_minor,
                 reference=reference,
                 callback_url=callback_url,
-                metadata={"order_id": order.id, "payment_id": payment.id},
+                metadata={
+                    "order_id": order.id,
+                    "payment_id": payment.id,
+                    "customer": {
+                        "full_name": order.full_name,
+                        "email": order.email,
+                        "phone_number": order.phone_number,
+                    },
+                    "shipping": {
+                        "country": order.shipping_country,
+                        "city": order.shipping_city,
+                        "address": order.shipping_address,
+                        "postal_code": order.shipping_postal_code,
+                    },
+                    "custom_fields": [
+                        {
+                            "display_name": "Customer name",
+                            "variable_name": "customer_name",
+                            "value": order.full_name,
+                        },
+                        {
+                            "display_name": "Customer phone",
+                            "variable_name": "customer_phone",
+                            "value": order.phone_number,
+                        },
+                        {
+                            "display_name": "Shipping address",
+                            "variable_name": "shipping_address",
+                            "value": f"{order.shipping_address}, {order.shipping_city}, {order.shipping_country} {order.shipping_postal_code}",
+                        },
+                    ],
+                },
             )
         except PaystackServiceError as exc:
             mark_payment_failed(payment.id, gateway_payload={"error": exc.message, "payload": exc.payload}, reason=exc.message)

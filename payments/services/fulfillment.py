@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
+from django.conf import settings
+from django.core.mail import send_mail
 from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
@@ -34,7 +38,6 @@ def _clear_paid_items_from_cart(order: Order) -> None:
             else:
                 cart_item.quantity -= qty_to_remove
                 cart_item.save(update_fields=["quantity", "updated_at"])
-        return
 
     if order.session_key:
         for row in product_quantities:
@@ -57,12 +60,69 @@ def _clear_paid_items_from_cart(order: Order) -> None:
                 cart_item.save(update_fields=["quantity", "updated_at"])
 
 
+def _format_currency(amount: Decimal, currency: str) -> str:
+    return f"{currency} {amount:,.2f}"
+
+
+def _send_order_paid_email(order: Order) -> None:
+    recipients = list(getattr(settings, "PAYMENT_ORDER_NOTIFY_EMAILS", []) or [])
+    if not recipients:
+        fallback = (getattr(settings, "PAYMENT_ORDER_NOTIFY_EMAIL", "") or "").strip()
+        if fallback:
+            recipients = [fallback]
+
+    if not recipients:
+        return
+
+    lines = []
+    for item in order.items.all().order_by("id"):
+        lines.append(
+            f"- {item.product_name} x{item.quantity} @ {_format_currency(item.unit_price, order.currency)} = {_format_currency(item.line_total, order.currency)}"
+        )
+
+    subject = f"New paid order #{order.id} - {order.full_name}"
+    body = "\n".join(
+        [
+            "A new order has been paid successfully.",
+            "",
+            f"Order ID: {order.id}",
+            f"Total: {_format_currency(order.total_amount, order.currency)}",
+            f"Status: {order.status}",
+            "",
+            "Customer details:",
+            f"Name: {order.full_name}",
+            f"Email: {order.email}",
+            f"Phone: {order.phone_number}",
+            "",
+            "Shipping details:",
+            f"Country: {order.shipping_country}",
+            f"City: {order.shipping_city}",
+            f"Address: {order.shipping_address}",
+            f"Postal code: {order.shipping_postal_code}",
+            "",
+            "Order items:",
+            *lines,
+            "",
+            "Billing details:",
+            f"Billing same as shipping: {order.billing_same_as_shipping}",
+        ]
+    )
+
+    try:
+        send_mail(
+            subject=subject,
+            message=body,
+            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
+            recipient_list=recipients,
+            fail_silently=True,
+        )
+    except Exception:
+        # Never block payment processing due to notification failure
+        pass
+
+
 @transaction.atomic
 def mark_payment_success(payment_id: int, *, gateway_payload: dict | None = None, source: str = "verify") -> tuple[Payment, bool]:
-    """
-    Idempotent success transition.
-    Returns (payment, changed) where changed=False means it was already successful.
-    """
     payment = Payment.objects.select_for_update().select_related("order").get(id=payment_id)
     order: Order = payment.order
 
@@ -85,7 +145,7 @@ def mark_payment_success(payment_id: int, *, gateway_payload: dict | None = None
         order.save(update_fields=["status", "metadata", "updated_at"])
 
     _clear_paid_items_from_cart(order)
-
+    _send_order_paid_email(order)
     return payment, True
 
 
