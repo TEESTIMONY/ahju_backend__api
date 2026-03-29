@@ -179,6 +179,44 @@ def _upload_image_to_supabase(*, file, folder: str, user_id: int) -> str:
     return public_url
 
 
+def _delete_supabase_public_url(file_url: str) -> None:
+    """Best-effort delete of an existing Supabase public object URL."""
+    if not file_url:
+        return
+
+    supabase_url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+    bucket_name = os.getenv("SUPABASE_STORAGE_BUCKET", "").strip()
+    service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    if not supabase_url or not bucket_name or not service_role_key:
+        return
+
+    try:
+        parsed = urlparse(file_url)
+        path = parsed.path or ""
+        expected_prefix = f"/storage/v1/object/public/{bucket_name}/"
+        if expected_prefix not in path:
+            return
+
+        object_path = path.split(expected_prefix, 1)[1].lstrip("/")
+        if not object_path:
+            return
+
+        delete_url = f"{supabase_url}/storage/v1/object/{bucket_name}/{unquote(object_path)}"
+        request = Request(
+            delete_url,
+            headers={
+                "apikey": service_role_key,
+                "Authorization": f"Bearer {service_role_key}",
+            },
+            method="DELETE",
+        )
+        with urlopen(request, timeout=15):
+            pass
+    except Exception:
+        # Deletion should never block upload flow.
+        return
+
+
 def _normalize_session_key(raw_value: str) -> str:
     return (raw_value or "").strip()[:64]
 
@@ -979,6 +1017,7 @@ class UserAppearanceView(APIView):
         )
 
         appearance, _ = UserAppearance.objects.get_or_create(user=request.user)
+        previous_url = appearance.profile_image_url if target == "profile" else appearance.hero_image_url
 
         if _supabase_storage_enabled():
             folder = "appearance/profile" if target == "profile" else "appearance/hero"
@@ -995,6 +1034,9 @@ class UserAppearanceView(APIView):
                 appearance.hero_image = None
                 appearance.hero_image_url = saved_url
                 appearance.save(update_fields=["hero_image", "hero_image_url"])
+
+            if previous_url and previous_url != saved_url:
+                _delete_supabase_public_url(previous_url)
         else:
             if target == "profile":
                 appearance.profile_image.save(Path(reduced_file.name).name, reduced_file, save=False)
