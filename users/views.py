@@ -4,6 +4,7 @@ import tempfile
 import re
 from pathlib import Path
 from datetime import timedelta
+from io import BytesIO
 from io import StringIO
 from decimal import Decimal
 from uuid import uuid4
@@ -12,6 +13,7 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.core.files.storage import default_storage
 from django.core.management import call_command
 from django.db import IntegrityError, transaction, connection
@@ -30,6 +32,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 import firebase_admin
 from firebase_admin import auth as firebase_auth
 from firebase_admin import credentials
+from PIL import Image, ImageOps
 
 from .models import (
     CartItem,
@@ -64,6 +67,67 @@ from .serializers import (
 
 
 User = get_user_model()
+
+
+def _public_profile_cache_key(username: str) -> str:
+    normalized_username = (username or "").strip().lower()
+    return f"public_profile:v2:{normalized_username}"
+
+
+def _invalidate_public_profile_cache(username: str) -> None:
+    if not username:
+        return
+    cache.delete(_public_profile_cache_key(username=username))
+
+
+def _reduce_image_before_upload(file_obj, *, max_width: int, max_height: int, quality: int = 82):
+    """Resize and compress uploaded images before persisting to storage."""
+
+    try:
+        if hasattr(file_obj, "seek"):
+            file_obj.seek(0)
+
+        with Image.open(file_obj) as image:
+            image = ImageOps.exif_transpose(image)
+            has_alpha = image.mode in ("RGBA", "LA") or (
+                image.mode == "P" and "transparency" in image.info
+            )
+            image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+
+            output = BytesIO()
+            original_name = Path(getattr(file_obj, "name", "image")).stem or "image"
+            if has_alpha:
+                if image.mode not in ("RGBA", "LA", "P"):
+                    image = image.convert("RGBA")
+                extension = "png"
+                image.save(output, format="PNG", optimize=True)
+            else:
+                if image.mode != "RGB":
+                    image = image.convert("RGB")
+                extension = "jpg"
+                image.save(
+                    output,
+                    format="JPEG",
+                    quality=quality,
+                    optimize=True,
+                    progressive=True,
+                )
+
+            output.seek(0)
+            reduced = output.read()
+
+            from django.core.files.uploadedfile import SimpleUploadedFile
+
+            content_type = "image/png" if extension == "png" else "image/jpeg"
+            return SimpleUploadedFile(
+                name=f"{original_name}.{extension}",
+                content=reduced,
+                content_type=content_type,
+            )
+    except Exception:
+        if hasattr(file_obj, "seek"):
+            file_obj.seek(0)
+        return file_obj
 
 
 def _supabase_storage_enabled() -> bool:
@@ -892,6 +956,7 @@ class UserAppearanceView(APIView):
         )
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        _invalidate_public_profile_cache(request.user.username)
         return Response(serializer.data)
 
     def post(self, request):
@@ -907,12 +972,18 @@ class UserAppearanceView(APIView):
         if not content_type.startswith("image/"):
             return Response({"detail": "Only image files are allowed"}, status=status.HTTP_400_BAD_REQUEST)
 
+        reduced_file = _reduce_image_before_upload(
+            file,
+            max_width=1200 if target == "profile" else 1920,
+            max_height=1200 if target == "profile" else 1080,
+        )
+
         appearance, _ = UserAppearance.objects.get_or_create(user=request.user)
 
         if _supabase_storage_enabled():
             folder = "appearance/profile" if target == "profile" else "appearance/hero"
             try:
-                saved_url = _upload_image_to_supabase(file=file, folder=folder, user_id=request.user.id)
+                saved_url = _upload_image_to_supabase(file=reduced_file, folder=folder, user_id=request.user.id)
             except ValueError as exc:
                 return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
 
@@ -926,12 +997,12 @@ class UserAppearanceView(APIView):
                 appearance.save(update_fields=["hero_image", "hero_image_url"])
         else:
             if target == "profile":
-                appearance.profile_image.save(Path(file.name).name, file, save=False)
+                appearance.profile_image.save(Path(reduced_file.name).name, reduced_file, save=False)
                 # Keep legacy URL field in sync for backward compatibility.
                 appearance.profile_image_url = appearance.profile_image.name
                 appearance.save(update_fields=["profile_image", "profile_image_url"])
             else:
-                appearance.hero_image.save(Path(file.name).name, file, save=False)
+                appearance.hero_image.save(Path(reduced_file.name).name, reduced_file, save=False)
                 # Keep legacy URL field in sync for backward compatibility.
                 appearance.hero_image_url = appearance.hero_image.name
                 appearance.save(update_fields=["hero_image", "hero_image_url"])
@@ -944,6 +1015,7 @@ class UserAppearanceView(APIView):
 
         if saved_url and not (saved_url.startswith("http://") or saved_url.startswith("https://")):
             saved_url = request.build_absolute_uri(saved_url)
+        _invalidate_public_profile_cache(request.user.username)
         return Response({"url": saved_url}, status=status.HTTP_201_CREATED)
 
 
@@ -959,18 +1031,21 @@ class UserAppearanceImageUploadView(APIView):
         if not content_type.startswith("image/"):
             return Response({"detail": "Only image files are allowed"}, status=status.HTTP_400_BAD_REQUEST)
 
+        reduced_file = _reduce_image_before_upload(file, max_width=1200, max_height=1200)
+
         if _supabase_storage_enabled():
             try:
-                saved_url = _upload_image_to_supabase(file=file, folder="appearance", user_id=request.user.id)
+                saved_url = _upload_image_to_supabase(file=reduced_file, folder="appearance", user_id=request.user.id)
             except ValueError as exc:
                 return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
         else:
-            original_name = Path(file.name).name
+            original_name = Path(reduced_file.name).name
             relative_path = f"appearance/{request.user.id}/{original_name}"
-            saved_path = default_storage.save(relative_path, file)
+            saved_path = default_storage.save(relative_path, reduced_file)
             saved_url = default_storage.url(saved_path)
         if not (saved_url.startswith("http://") or saved_url.startswith("https://")):
             saved_url = request.build_absolute_uri(saved_url)
+        _invalidate_public_profile_cache(request.user.username)
         return Response({"url": saved_url}, status=status.HTTP_201_CREATED)
 
 
@@ -995,6 +1070,7 @@ class UserLinksView(APIView):
             is_active=serializer.validated_data.get("is_active", True),
             sort_order=next_sort_order,
         )
+        _invalidate_public_profile_cache(request.user.username)
         return Response(UserLinkSerializer(link).data, status=status.HTTP_201_CREATED)
 
 
@@ -1009,6 +1085,7 @@ class UserLinkDetailView(APIView):
         serializer = UserLinkSerializer(instance=link, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        _invalidate_public_profile_cache(request.user.username)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def delete(self, request, link_id):
@@ -1017,6 +1094,7 @@ class UserLinkDetailView(APIView):
             return Response({"detail": "Link not found"}, status=status.HTTP_404_NOT_FOUND)
 
         link.delete()
+        _invalidate_public_profile_cache(request.user.username)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -1052,6 +1130,7 @@ class UserPortfolioItemsView(APIView):
             is_active=serializer.validated_data.get("is_active", True),
             sort_order=next_sort_order,
         )
+        _invalidate_public_profile_cache(request.user.username)
         return Response(
             UserPortfolioItemSerializer(item, context={"request": request}).data,
             status=status.HTTP_201_CREATED,
@@ -1070,15 +1149,17 @@ class UserPortfolioUploadView(APIView):
         if not content_type.startswith("image/"):
             return Response({"detail": "Only image files are allowed"}, status=status.HTTP_400_BAD_REQUEST)
 
+        reduced_file = _reduce_image_before_upload(file, max_width=1800, max_height=1800)
+
         if _supabase_storage_enabled():
             try:
-                stored_path = _upload_image_to_supabase(file=file, folder="portfolio", user_id=request.user.id)
+                stored_path = _upload_image_to_supabase(file=reduced_file, folder="portfolio", user_id=request.user.id)
             except ValueError as exc:
                 return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
         else:
-            original_name = Path(file.name).name
+            original_name = Path(reduced_file.name).name
             relative_path = f"portfolio/{request.user.id}/{original_name}"
-            saved_path = default_storage.save(relative_path, file)
+            saved_path = default_storage.save(relative_path, reduced_file)
             # Store relative media path so it works across devices/environments.
             # Serializer will return an absolute URL for the current request host.
             stored_path = saved_path
@@ -1090,11 +1171,12 @@ class UserPortfolioUploadView(APIView):
         item = UserPortfolioItem.objects.create(
             user=request.user,
             kind=UserPortfolioItem.KIND_UPLOAD,
-            title=request.data.get("title", "").strip() or os.path.splitext(file.name)[0],
+            title=request.data.get("title", "").strip() or os.path.splitext(reduced_file.name)[0],
             image_url=stored_path,
             is_active=True,
             sort_order=next_sort_order,
         )
+        _invalidate_public_profile_cache(request.user.username)
         return Response(
             UserPortfolioItemSerializer(item, context={"request": request}).data,
             status=status.HTTP_201_CREATED,
@@ -1181,6 +1263,7 @@ class UserPortfolioImportImagesView(APIView):
             next_sort_order += 1
             created_items.append(item)
 
+        _invalidate_public_profile_cache(request.user.username)
         return Response(
             {
                 "count": len(created_items),
@@ -1210,6 +1293,7 @@ class UserPortfolioItemDetailView(APIView):
             updated.embed_html = _build_embed_html(updated.source_url)
             updated.save(update_fields=["embed_html"])
 
+        _invalidate_public_profile_cache(request.user.username)
         return Response(UserPortfolioItemSerializer(updated, context={"request": request}).data)
 
     def delete(self, request, item_id):
@@ -1218,6 +1302,7 @@ class UserPortfolioItemDetailView(APIView):
             return Response({"detail": "Portfolio item not found"}, status=status.HTTP_404_NOT_FOUND)
 
         item.delete()
+        _invalidate_public_profile_cache(request.user.username)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -1338,40 +1423,54 @@ class PublicProfileView(APIView):
         if not username:
             return Response({"detail": "Missing required query parameter: id"}, status=status.HTTP_400_BAD_REQUEST)
 
-        user = User.objects.filter(username__iexact=username).first()
+        cache_key = _public_profile_cache_key(username=username)
+        cached_payload = cache.get(cache_key)
+        if cached_payload:
+            response = Response(cached_payload)
+            response["Cache-Control"] = "public, max-age=60, stale-while-revalidate=300"
+            return response
+
+        user = User.objects.only("id", "username").filter(username__iexact=username).first()
         if not user:
             return Response({"detail": "Profile not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        appearance = UserAppearance.objects.filter(user=user).first()
-        active_links = UserLink.objects.filter(user=user, is_active=True).order_by("sort_order", "id")
-        active_portfolio = UserPortfolioItem.objects.filter(user=user, is_active=True).order_by("sort_order", "id")
+        appearance = UserAppearance.objects.filter(user_id=user.id).first()
+        active_links = UserLink.objects.filter(user_id=user.id, is_active=True).only(
+            "id", "title", "url", "sort_order"
+        ).order_by("sort_order", "id")
+        active_portfolio = UserPortfolioItem.objects.filter(user_id=user.id, is_active=True).only(
+            "id", "kind", "title", "image_url", "source_url", "embed_html", "description", "sort_order"
+        ).order_by("sort_order", "id")
 
         appearance_payload = None
         if appearance:
             appearance_payload = UserAppearanceSerializer(appearance, context={"request": request}).data
 
-        return Response(
-            {
-                "username": user.username,
-                "display_name": appearance_payload.get("display_name") if appearance_payload else f"@{user.username}",
-                "short_bio": appearance_payload.get("short_bio") if appearance_payload else "",
-                "profile_image_url": appearance_payload.get("profile_image_url") if appearance_payload else "",
-                "hero_image_url": appearance_payload.get("hero_image_url") if appearance_payload else "",
-                "selected_theme": appearance_payload.get("selected_theme") if appearance_payload else "minimal-light",
-                "name_font": appearance_payload.get("name_font") if appearance_payload else "Inter, sans-serif",
-                "name_color": appearance_payload.get("name_color") if appearance_payload else "#223136",
-                "links": [
-                    {
-                        "id": link.id,
-                        "title": link.title,
-                        "url": link.url,
-                    }
-                    for link in active_links
-                ],
-                "portfolio": UserPortfolioItemSerializer(
-                    active_portfolio,
-                    many=True,
-                    context={"request": request},
-                ).data,
-            }
-        )
+        payload = {
+            "username": user.username,
+            "display_name": appearance_payload.get("display_name") if appearance_payload else f"@{user.username}",
+            "short_bio": appearance_payload.get("short_bio") if appearance_payload else "",
+            "profile_image_url": appearance_payload.get("profile_image_url") if appearance_payload else "",
+            "hero_image_url": appearance_payload.get("hero_image_url") if appearance_payload else "",
+            "selected_theme": appearance_payload.get("selected_theme") if appearance_payload else "minimal-light",
+            "name_font": appearance_payload.get("name_font") if appearance_payload else "Inter, sans-serif",
+            "name_color": appearance_payload.get("name_color") if appearance_payload else "#223136",
+            "links": [
+                {
+                    "id": link.id,
+                    "title": link.title,
+                    "url": link.url,
+                }
+                for link in active_links
+            ],
+            "portfolio": UserPortfolioItemSerializer(
+                active_portfolio,
+                many=True,
+                context={"request": request},
+            ).data,
+        }
+
+        cache.set(cache_key, payload, timeout=60)
+        response = Response(payload)
+        response["Cache-Control"] = "public, max-age=60, stale-while-revalidate=300"
+        return response
