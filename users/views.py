@@ -138,6 +138,10 @@ def _supabase_storage_enabled() -> bool:
     )
 
 
+def _is_deployed_runtime() -> bool:
+    return os.getenv("RENDER", "").strip().lower() == "true" or os.getenv("KOYEB", "").strip().lower() == "true"
+
+
 def _upload_image_to_supabase(*, file, folder: str, user_id: int) -> str:
     supabase_url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
     bucket_name = os.getenv("SUPABASE_STORAGE_BUCKET", "").strip()
@@ -998,67 +1002,79 @@ class UserAppearanceView(APIView):
         return Response(serializer.data)
 
     def post(self, request):
-        file = request.FILES.get("image")
-        if not file:
-            return Response({"detail": "No image file provided"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            file = request.FILES.get("image")
+            if not file:
+                return Response({"detail": "No image file provided"}, status=status.HTTP_400_BAD_REQUEST)
 
-        target = request.data.get("target", "profile")
-        if target not in {"profile", "hero"}:
-            return Response({"detail": "target must be 'profile' or 'hero'"}, status=status.HTTP_400_BAD_REQUEST)
+            target = request.data.get("target", "profile")
+            if target not in {"profile", "hero"}:
+                return Response({"detail": "target must be 'profile' or 'hero'"}, status=status.HTTP_400_BAD_REQUEST)
 
-        content_type = file.content_type or ""
-        if not content_type.startswith("image/"):
-            return Response({"detail": "Only image files are allowed"}, status=status.HTTP_400_BAD_REQUEST)
+            content_type = file.content_type or ""
+            if not content_type.startswith("image/"):
+                return Response({"detail": "Only image files are allowed"}, status=status.HTTP_400_BAD_REQUEST)
 
-        reduced_file = _reduce_image_before_upload(
-            file,
-            max_width=1200 if target == "profile" else 1920,
-            max_height=1200 if target == "profile" else 1080,
-        )
+            reduced_file = _reduce_image_before_upload(
+                file,
+                max_width=1200 if target == "profile" else 1920,
+                max_height=1200 if target == "profile" else 1080,
+            )
 
-        appearance, _ = UserAppearance.objects.get_or_create(user=request.user)
-        previous_url = appearance.profile_image_url if target == "profile" else appearance.hero_image_url
+            appearance, _ = UserAppearance.objects.get_or_create(user=request.user)
+            previous_url = appearance.profile_image_url if target == "profile" else appearance.hero_image_url
 
-        if _supabase_storage_enabled():
-            folder = "appearance/profile" if target == "profile" else "appearance/hero"
-            try:
-                saved_url = _upload_image_to_supabase(file=reduced_file, folder=folder, user_id=request.user.id)
-            except ValueError as exc:
-                return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+            if _supabase_storage_enabled():
+                folder = "appearance/profile" if target == "profile" else "appearance/hero"
+                try:
+                    saved_url = _upload_image_to_supabase(file=reduced_file, folder=folder, user_id=request.user.id)
+                except ValueError as exc:
+                    return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
 
-            if target == "profile":
-                appearance.profile_image = None
-                appearance.profile_image_url = saved_url
-                appearance.save(update_fields=["profile_image", "profile_image_url"])
+                if target == "profile":
+                    appearance.profile_image = None
+                    appearance.profile_image_url = saved_url
+                    appearance.save(update_fields=["profile_image", "profile_image_url"])
+                else:
+                    appearance.hero_image = None
+                    appearance.hero_image_url = saved_url
+                    appearance.save(update_fields=["hero_image", "hero_image_url"])
+
+                if previous_url and previous_url != saved_url:
+                    _delete_supabase_public_url(previous_url)
             else:
-                appearance.hero_image = None
-                appearance.hero_image_url = saved_url
-                appearance.save(update_fields=["hero_image", "hero_image_url"])
+                if _is_deployed_runtime():
+                    return Response(
+                        {
+                            "detail": "Supabase storage is not configured on this server. Set SUPABASE_URL, SUPABASE_STORAGE_BUCKET and SUPABASE_SERVICE_ROLE_KEY.",
+                        },
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    )
 
-            if previous_url and previous_url != saved_url:
-                _delete_supabase_public_url(previous_url)
-        else:
-            if target == "profile":
-                appearance.profile_image.save(Path(reduced_file.name).name, reduced_file, save=False)
-                # Keep legacy URL field in sync for backward compatibility.
-                appearance.profile_image_url = appearance.profile_image.name
-                appearance.save(update_fields=["profile_image", "profile_image_url"])
-            else:
-                appearance.hero_image.save(Path(reduced_file.name).name, reduced_file, save=False)
-                # Keep legacy URL field in sync for backward compatibility.
-                appearance.hero_image_url = appearance.hero_image.name
-                appearance.save(update_fields=["hero_image", "hero_image_url"])
+                if target == "profile":
+                    appearance.profile_image.save(Path(reduced_file.name).name, reduced_file, save=False)
+                    appearance.profile_image_url = request.build_absolute_uri(default_storage.url(appearance.profile_image.name))
+                    appearance.save(update_fields=["profile_image", "profile_image_url"])
+                else:
+                    appearance.hero_image.save(Path(reduced_file.name).name, reduced_file, save=False)
+                    appearance.hero_image_url = request.build_absolute_uri(default_storage.url(appearance.hero_image.name))
+                    appearance.save(update_fields=["hero_image", "hero_image_url"])
 
-            saved_url = ""
-            if target == "profile" and appearance.profile_image:
-                saved_url = default_storage.url(appearance.profile_image.name)
-            elif target == "hero" and appearance.hero_image:
-                saved_url = default_storage.url(appearance.hero_image.name)
+                saved_url = ""
+                if target == "profile" and appearance.profile_image:
+                    saved_url = default_storage.url(appearance.profile_image.name)
+                elif target == "hero" and appearance.hero_image:
+                    saved_url = default_storage.url(appearance.hero_image.name)
 
-        if saved_url and not (saved_url.startswith("http://") or saved_url.startswith("https://")):
-            saved_url = request.build_absolute_uri(saved_url)
-        _invalidate_public_profile_cache(request.user.username)
-        return Response({"url": saved_url}, status=status.HTTP_201_CREATED)
+            if saved_url and not (saved_url.startswith("http://") or saved_url.startswith("https://")):
+                saved_url = request.build_absolute_uri(saved_url)
+            _invalidate_public_profile_cache(request.user.username)
+            return Response({"url": saved_url}, status=status.HTTP_201_CREATED)
+        except Exception as exc:
+            return Response(
+                {"detail": f"Appearance upload failed: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
 
 class UserAppearanceImageUploadView(APIView):
