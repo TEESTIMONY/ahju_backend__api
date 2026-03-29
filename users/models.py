@@ -1,57 +1,5 @@
 from django.conf import settings
-from django.core.files.base import ContentFile
 from django.db import models
-from io import BytesIO
-from pathlib import Path
-
-from PIL import Image, ImageOps
-
-
-def _optimize_uploaded_image(file_obj, *, max_width: int, max_height: int, quality: int = 82):
-    """Resize/compress image uploads before persistence.
-
-    Keeps transparency with PNG/WebP output and uses JPEG for opaque images.
-    Falls back to the original file if processing fails.
-    """
-
-    try:
-        if hasattr(file_obj, "seek"):
-            file_obj.seek(0)
-
-        with Image.open(file_obj) as image:
-            image = ImageOps.exif_transpose(image)
-            has_alpha = image.mode in ("RGBA", "LA") or (
-                image.mode == "P" and "transparency" in image.info
-            )
-
-            image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
-
-            output = BytesIO()
-            original_name = Path(getattr(file_obj, "name", "image")).stem or "image"
-
-            if has_alpha:
-                if image.mode not in ("RGBA", "LA", "P"):
-                    image = image.convert("RGBA")
-                extension = "png"
-                image.save(output, format="PNG", optimize=True)
-            else:
-                if image.mode != "RGB":
-                    image = image.convert("RGB")
-                extension = "jpg"
-                image.save(
-                    output,
-                    format="JPEG",
-                    quality=quality,
-                    optimize=True,
-                    progressive=True,
-                )
-
-            output.seek(0)
-            return ContentFile(output.read(), name=f"{original_name}.{extension}")
-    except Exception:
-        if hasattr(file_obj, "seek"):
-            file_obj.seek(0)
-        return file_obj
 
 
 class Product(models.Model):
@@ -77,15 +25,6 @@ class Product(models.Model):
     def __str__(self):
         return self.name
 
-    def save(self, *args, **kwargs):
-        if self.image and not self.image._committed:
-            self.image = _optimize_uploaded_image(
-                self.image,
-                max_width=1800,
-                max_height=1800,
-            )
-        super().save(*args, **kwargs)
-
 
 class ProductGalleryImage(models.Model):
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="gallery_uploads")
@@ -98,15 +37,6 @@ class ProductGalleryImage(models.Model):
 
     def __str__(self):
         return f"{self.product.name} gallery image #{self.id}"
-
-    def save(self, *args, **kwargs):
-        if self.image and not self.image._committed:
-            self.image = _optimize_uploaded_image(
-                self.image,
-                max_width=1800,
-                max_height=1800,
-            )
-        super().save(*args, **kwargs)
 
 
 class CartItem(models.Model):
@@ -257,21 +187,6 @@ class UserAppearance(models.Model):
 
     def __str__(self):
         return f"Appearance<{self.user}>"
-
-    def save(self, *args, **kwargs):
-        if self.profile_image and not self.profile_image._committed:
-            self.profile_image = _optimize_uploaded_image(
-                self.profile_image,
-                max_width=1200,
-                max_height=1200,
-            )
-        if self.hero_image and not self.hero_image._committed:
-            self.hero_image = _optimize_uploaded_image(
-                self.hero_image,
-                max_width=1920,
-                max_height=1080,
-            )
-        super().save(*args, **kwargs)
 
 
 class UserLink(models.Model):
