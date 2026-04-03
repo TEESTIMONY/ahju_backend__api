@@ -49,6 +49,7 @@ from .serializers import (
     CartItemUpsertSerializer,
     DashboardTrackSerializer,
     GoogleAuthSerializer,
+    ProductListItemSerializer,
     ProductSerializer,
     PublicTrackSerializer,
     PublicContactLeadSubmitSerializer,
@@ -937,36 +938,18 @@ class UserAppearanceView(APIView):
         return Response(serializer.data)
 
     def post(self, request):
-        try:
-            file = request.FILES.get("image")
-            if not file:
-                return Response({"detail": "No image file provided"}, status=status.HTTP_400_BAD_REQUEST)
+        file = request.FILES.get("image")
+        if not file:
+            return Response({"detail": "No image file provided"}, status=status.HTTP_400_BAD_REQUEST)
 
-            target = request.data.get("target", "profile")
-            if target not in {"profile", "hero"}:
-                return Response({"detail": "target must be 'profile' or 'hero'"}, status=status.HTTP_400_BAD_REQUEST)
+        target = request.data.get("target", "profile")
+        if target not in {"profile", "hero"}:
+            return Response({"detail": "target must be 'profile' or 'hero'"}, status=status.HTTP_400_BAD_REQUEST)
 
-            content_type = file.content_type or ""
-            if not content_type.startswith("image/"):
-                return Response({"detail": "Only image files are allowed"}, status=status.HTTP_400_BAD_REQUEST)
+        content_type = file.content_type or ""
+        if not content_type.startswith("image/"):
+            return Response({"detail": "Only image files are allowed"}, status=status.HTTP_400_BAD_REQUEST)
 
-<<<<<<< HEAD
-            reduced_file = _reduce_image_before_upload(
-                file,
-                max_width=1200 if target == "profile" else 1920,
-                max_height=1200 if target == "profile" else 1080,
-            )
-
-            appearance, _ = UserAppearance.objects.get_or_create(user=request.user)
-            previous_url = appearance.profile_image_url if target == "profile" else appearance.hero_image_url
-
-            if _supabase_storage_enabled():
-                folder = "appearance/profile" if target == "profile" else "appearance/hero"
-                try:
-                    saved_url = _upload_image_to_supabase(file=reduced_file, folder=folder, user_id=request.user.id)
-                except ValueError as exc:
-                    return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
-=======
         appearance, _ = UserAppearance.objects.get_or_create(user=request.user)
 
         if _supabase_storage_enabled():
@@ -975,75 +958,30 @@ class UserAppearanceView(APIView):
                 saved_url = _upload_image_to_supabase(file=file, folder=folder, user_id=request.user.id)
             except ValueError as exc:
                 return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
->>>>>>> parent of c1f2d7e (updated the image performance)
 
-                if target == "profile":
-                    appearance.profile_image = None
-                    appearance.profile_image_url = saved_url
-                    appearance.save(update_fields=["profile_image", "profile_image_url"])
-                else:
-                    appearance.hero_image = None
-                    appearance.hero_image_url = saved_url
-                    appearance.save(update_fields=["hero_image", "hero_image_url"])
-
-                if previous_url and previous_url != saved_url:
-                    _delete_supabase_public_url(previous_url)
+            if target == "profile":
+                appearance.profile_image = None
+                appearance.profile_image_url = saved_url
+                appearance.save(update_fields=["profile_image", "profile_image_url"])
             else:
-<<<<<<< HEAD
-                if _is_deployed_runtime():
-                    return Response(
-                        {
-                            "detail": "Supabase storage is not configured on this server. Set SUPABASE_URL, SUPABASE_STORAGE_BUCKET and SUPABASE_SERVICE_ROLE_KEY.",
-                        },
-                        status=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    )
-=======
                 appearance.hero_image = None
                 appearance.hero_image_url = saved_url
                 appearance.save(update_fields=["hero_image", "hero_image_url"])
         else:
             if target == "profile":
                 appearance.profile_image.save(Path(file.name).name, file, save=False)
-                # Keep legacy URL field in sync for backward compatibility.
                 appearance.profile_image_url = appearance.profile_image.name
                 appearance.save(update_fields=["profile_image", "profile_image_url"])
+                saved_url = default_storage.url(appearance.profile_image.name)
             else:
                 appearance.hero_image.save(Path(file.name).name, file, save=False)
-                # Keep legacy URL field in sync for backward compatibility.
                 appearance.hero_image_url = appearance.hero_image.name
                 appearance.save(update_fields=["hero_image", "hero_image_url"])
->>>>>>> parent of c1f2d7e (updated the image performance)
+                saved_url = default_storage.url(appearance.hero_image.name)
 
-                if target == "profile":
-                    appearance.profile_image.save(Path(reduced_file.name).name, reduced_file, save=False)
-                    appearance.profile_image_url = request.build_absolute_uri(default_storage.url(appearance.profile_image.name))
-                    appearance.save(update_fields=["profile_image", "profile_image_url"])
-                else:
-                    appearance.hero_image.save(Path(reduced_file.name).name, reduced_file, save=False)
-                    appearance.hero_image_url = request.build_absolute_uri(default_storage.url(appearance.hero_image.name))
-                    appearance.save(update_fields=["hero_image", "hero_image_url"])
-
-<<<<<<< HEAD
-                saved_url = ""
-                if target == "profile" and appearance.profile_image:
-                    saved_url = default_storage.url(appearance.profile_image.name)
-                elif target == "hero" and appearance.hero_image:
-                    saved_url = default_storage.url(appearance.hero_image.name)
-
-            if saved_url and not (saved_url.startswith("http://") or saved_url.startswith("https://")):
-                saved_url = request.build_absolute_uri(saved_url)
-            _invalidate_public_profile_cache(request.user.username)
-            return Response({"url": saved_url}, status=status.HTTP_201_CREATED)
-        except Exception as exc:
-            return Response(
-                {"detail": f"Appearance upload failed: {exc}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-=======
-        if saved_url and not (saved_url.startswith("http://") or saved_url.startswith("https://")):
+        if not (saved_url.startswith("http://") or saved_url.startswith("https://")):
             saved_url = request.build_absolute_uri(saved_url)
         return Response({"url": saved_url}, status=status.HTTP_201_CREATED)
->>>>>>> parent of c1f2d7e (updated the image performance)
 
 
 class UserAppearanceImageUploadView(APIView):
@@ -1333,7 +1271,23 @@ class ProductListView(APIView):
         if query:
             products = products.filter(Q(name__icontains=query) | Q(category__icontains=query))
 
-        return Response(ProductSerializer(products, many=True, context={"request": request}).data)
+        products = products.order_by("name")
+        response = Response(ProductListItemSerializer(products, many=True, context={"request": request}).data)
+        response["Cache-Control"] = "public, max-age=60, s-maxage=120, stale-while-revalidate=300"
+        return response
+
+
+class ProductDetailView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        product = Product.objects.filter(is_active=True, slug=slug).first()
+        if not product:
+            return Response({"detail": "Product not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        response = Response(ProductSerializer(product, context={"request": request}).data)
+        response["Cache-Control"] = "public, max-age=120, s-maxage=300, stale-while-revalidate=600"
+        return response
 
 
 class CartView(APIView):
@@ -1437,19 +1391,32 @@ class PublicProfileView(APIView):
         if not username:
             return Response({"detail": "Missing required query parameter: id"}, status=status.HTTP_400_BAD_REQUEST)
 
-        user = User.objects.filter(username__iexact=username).first()
+        user = (
+            User.objects.select_related("appearance")
+            .only("id", "username")
+            .filter(username__iexact=username)
+            .first()
+        )
         if not user:
             return Response({"detail": "Profile not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        appearance = UserAppearance.objects.filter(user=user).first()
-        active_links = UserLink.objects.filter(user=user, is_active=True).order_by("sort_order", "id")
+        try:
+            appearance = user.appearance
+        except UserAppearance.DoesNotExist:
+            appearance = None
+
+        active_links = (
+            UserLink.objects.filter(user=user, is_active=True)
+            .only("id", "title", "url")
+            .order_by("sort_order", "id")
+        )
         active_portfolio = UserPortfolioItem.objects.filter(user=user, is_active=True).order_by("sort_order", "id")
 
         appearance_payload = None
         if appearance:
             appearance_payload = UserAppearanceSerializer(appearance, context={"request": request}).data
 
-        return Response(
+        response = Response(
             {
                 "username": user.username,
                 "display_name": appearance_payload.get("display_name") if appearance_payload else f"@{user.username}",
@@ -1474,3 +1441,5 @@ class PublicProfileView(APIView):
                 ).data,
             }
         )
+        response["Cache-Control"] = "public, max-age=60, s-maxage=180, stale-while-revalidate=300"
+        return response

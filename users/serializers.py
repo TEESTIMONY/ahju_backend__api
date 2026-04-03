@@ -279,6 +279,37 @@ class ProductSerializer(serializers.ModelSerializer):
         ]
 
 
+class ProductListItemSerializer(serializers.ModelSerializer):
+    image_url = serializers.SerializerMethodField()
+
+    def get_image_url(self, obj):
+        request = self.context.get("request")
+
+        if getattr(obj, "image", None):
+            try:
+                image_path = obj.image.name or ""
+                if image_path:
+                    return _absolute_media_url(request, image_path)
+            except Exception:
+                pass
+
+        return _absolute_media_url(request, obj.image_url)
+
+    class Meta:
+        model = Product
+        fields = [
+            "id",
+            "name",
+            "slug",
+            "category",
+            "price",
+            "old_price",
+            "image_url",
+            "is_active",
+            "stock_quantity",
+        ]
+
+
 class CartItemSerializer(serializers.ModelSerializer):
     product = ProductSerializer(read_only=True)
 
