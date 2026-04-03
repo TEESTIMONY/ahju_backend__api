@@ -1391,12 +1391,7 @@ class PublicProfileView(APIView):
         if not username:
             return Response({"detail": "Missing required query parameter: id"}, status=status.HTTP_400_BAD_REQUEST)
 
-        user = (
-            User.objects.select_related("appearance")
-            .only("id", "username")
-            .filter(username__iexact=username)
-            .first()
-        )
+        user = User.objects.filter(username__iexact=username).first()
         if not user:
             return Response({"detail": "Profile not found"}, status=status.HTTP_404_NOT_FOUND)
 
